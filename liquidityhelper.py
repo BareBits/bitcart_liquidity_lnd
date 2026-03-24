@@ -2011,12 +2011,12 @@ async def main():
     # init notifications
     try:
         if len(NOTIFICATION_PROVIDERS)==0:
-            NOTIFICATION_PROVIDERS=await run_every_x_hours(my_func=setup_notifiers(),hours=6)
+            NOTIFICATION_PROVIDERS=await run_every_x_hours(my_func=setup_notifiers,hours=6)
     except Exception as e:
         logger.error(f'Not able to setup notifications, please see logs! {e}')
     # init Bitcart API
     try:
-        logger.info("Initializing bitcart API...")
+        logger.info("Initializing bitcart API....")
         api = BitcartAPI(BITCART_URL, AUTH_TOKEN)
         if not AUTH_TOKEN:
             token_object=SimpleVariable.get_or_none(
