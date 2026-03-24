@@ -2016,7 +2016,7 @@ async def main():
         logger.error(f'Not able to setup notifications, please see logs! {e}')
     # init Bitcart API
     try:
-        logger.info("Initializing bitcart API...")
+        logger.info("Initializing bitcart API....")
         api = BitcartAPI(BITCART_URL, AUTH_TOKEN)
         if not AUTH_TOKEN:
             token_object=SimpleVariable.get_or_none(
