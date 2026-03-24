@@ -1691,24 +1691,30 @@ async def do_ln_cashouts(api:BitcartAPI,
         logger.info(
             f"For wallet {wallet_id} Attempting to cashout via LN {cashout_amount_avail_ln}"
         )
-    updated_counter = SimpleDateTimeField.replace(
-        name="LAST_LN_CASHOUT_ATTEMPT", date=datetime.datetime.now()
-    ).execute()
-    if FORCE_CASHOUT_INVOICE:
-        invoice = FORCE_CASHOUT_INVOICE
-    else:
-        invoice=await lnurl_to_invoice(CASHOUT_LIGHTNING_ADDRESS,cashout_amount_avail_ln)
-        if not invoice:
-            logger.error('Error turning LNURL to invoice, not making cashout')
-            return
-    if DRY_RUN_FUNDS:
-        logger.info(f"Skipping LN payout invoice {invoice} wallet id {wallet_id}")
-        return
-    ln_transaction_result=await electrum_pay_ln_invoice(xpub,invoice,label=CASHOUT_REASON)
-    if ln_transaction_result:
+
+    actual_cashout_amount=cashout_amount_avail_ln
+    # keep trying smaller cashouts until one goes through
+    while actual_cashout_amount<=1000:
         updated_counter = SimpleDateTimeField.replace(
-            name="LAST_SUCCESSFUL_LN_CASHOUT_PAYMENT", date=datetime.datetime.now()
+            name="LAST_LN_CASHOUT_ATTEMPT", date=datetime.datetime.now()
         ).execute()
+        if FORCE_CASHOUT_INVOICE:
+            invoice = FORCE_CASHOUT_INVOICE
+        else:
+            invoice=await lnurl_to_invoice(CASHOUT_LIGHTNING_ADDRESS,cashout_amount_avail_ln)
+            if not invoice:
+                logger.error('Error turning LNURL to invoice, not making cashout')
+                return
+        if DRY_RUN_FUNDS:
+            logger.info(f"Skipping LN payout invoice {invoice} wallet id {wallet_id}")
+            return
+        ln_transaction_result=await electrum_pay_ln_invoice(xpub,invoice,label=CASHOUT_REASON)
+        if ln_transaction_result:
+            updated_counter = SimpleDateTimeField.replace(
+                name="LAST_SUCCESSFUL_LN_CASHOUT_PAYMENT", date=datetime.datetime.now()
+            ).execute()
+            return
+        actual_cashout_amount=int(actual_cashout_amount/2)
 
 
 
