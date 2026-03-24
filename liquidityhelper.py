@@ -2045,9 +2045,7 @@ async def main():
         # Check authentication
         api = BitcartAPI(BITCART_URL, AUTH_TOKEN)
         auth_result = await api.is_authenticated()
-        if auth_result:
-            logger.info("✅ API client initialized with authentication token!")
-        else:
+        if not auth_result:
             logger.error(
                 "⚠️ Bitcart Authentication failed..."
             )
