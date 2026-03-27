@@ -43,10 +43,10 @@ CASHOUT_ONCHAIN:Optional[str]=None # on-chain address to cash out to, not curren
 #NOTUSED_ONCHAIN_CASHOUT_CHANNEL_THRESHOLD_IN_LOCALSATS:int=50000 # if doing on-chain cashouts, close LN channels that have this many sats or more on local side
 #NOTUSED_ONCHAIN_CASHOUT_CHANNEL_THRESHOLD_IN_REMOTESATS:int=20000 # if doing on-chain cashouts, close LN channels that have this many sats or less on remote side. This should generally be the smallest order you can expect to receive
 #NOTUSED_COMBINE_STORE_CASHOUTS:bool=False # let stores share a cashout procedure, saves fees for on-chain cashouts. Does nothing currently.
-MIN_ONCHAIN_CASHOUT:int=10000 # minimum to cash-out on-chain
+MIN_ONCHAIN_CASHOUT:int=25000 # minimum to cash-out on-chain
 #ON_CHAIN_FEE_DELAY:int=15 # only send fees on-chain is last successful LN fee payment > x days ago, not used
 #ENABLE_FEE_SENDING_ONCHAIN:bool=False
-FORCE_CASHOUT_AMOUNT_ONCHAIN:Optional[int]=1000 #whenever sending onchain cashouts, use this amount instead of the actual amount due
+FORCE_CASHOUT_AMOUNT_ONCHAIN:Optional[int]=None #whenever sending onchain cashouts, use this amount instead of the actual amount due
 MIN_INBOUND_LIQUIDITY_PER_CHANNEL:int=50000 # we should always have one channel with at least this much inbound liquidity, in sats. Prevent situation where MIN_INBOUND_LIQUIDITY is met via a bunch of small channels. Request more if we don't have it
 #MIN_RESERVE_LN:int=0 # keep this amount of sats in LN in reserve to open new channels for inbound liquidity
 
@@ -59,7 +59,7 @@ LSP_DEV_MODE:bool=False # run in dev mode, use TESTNET (applicable to LSP stuff 
 
 # GLOBAL VARIABLES THAT SHOULD NEVER NEED TO BE CHANGED
 FEE_PAYOUT_REASON='lnhelper_fee'
-CASHOUT_REASON='lnhelper_fee'
+CASHOUT_REASON='lnhelper_cashout'
 TOPUP_NAME='topupself'
 TOPUP_BAREBITS='topupbarebits'
 MIN_CHANNEL_SIZE_IN_SATS=60000 # never open a channel smaller than this amount, electrum minimum as set by bitcart is 60000 https://github.com/bitcart/bitcart/blob/master/daemons/btc.py
@@ -71,6 +71,7 @@ ENABLE_FEE_SENDING:bool=True
 ENABLE_FEE_SENDING_LN:bool=True
 ENABLE_CASHOUT_LN:bool=True
 ENABLE_CASHOUT_ONCHAIN:bool=False # Disabled for now, onchain funds automatically get moved into LN channels
+PREFER_CASHOUT_ONCHAIN:bool=False # prefer cashing out on-chain, when possible (stops funds from being moved into LN)
 DEBUG_STEPS:bool=False # if True, stop between each major step (liquidity calculations, fee payment, etc) in debugger
 ## Debug flags for cashouts and fees
 FORCE_FEE_AMOUNT:Optional[int]=None # whenever sending fees, use this amount instead of the actual amount due

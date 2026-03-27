@@ -345,6 +345,37 @@ async def electrum_rpc(method, myxpub: str, params: Dict[str, str] = None):
     )
     return response.json()
 
+async def electrum_pay_onchain(xpub:str,dest_addr:str,label:str,amount:float)->bool:
+    """
+    Send an on-chain payment. AMOUNT IS IN BTC, NOT SATS
+    """
+    # Make transaction
+    pay_response=await electrum_rpc(
+        "payto",
+        xpub,params={'destination':dest_addr,
+                     'amount':str(amount),
+                     'feerate':1,
+                     }
+    )
+    if not pay_response['result']:
+        logger.warning(f'Error making payment: {pay_response}')
+        return False
+    transaction=pay_response['result']
+    # Broadcast transaction
+    broadcast_response = await electrum_rpc(
+        "broadcast",
+        xpub, params={'tx': transaction}
+    )
+    if not broadcast_response['result']:
+        logger.warning(f'Error making payment broadcast: {broadcast_response}')
+        return False
+    # set label
+    mykey=broadcast_response['result']
+    label_response = await electrum_rpc(
+        "setlabel",
+        xpub,params={'key':mykey,'label':label}
+    )
+    return True
 async def electrum_pay_ln_invoice(xpub:str,invoice:str,label:str)->bool:
     """
     Pay ln invoice, add label, return True if successful, False otherwise
@@ -1668,6 +1699,40 @@ async def calculate_fees(api: BitcartAPI) -> Optional[bool]:
                 logger.error('Failed to pay fee!')
     return True
 
+async def do_onchain_cashouts(api:BitcartAPI,
+                              wallet_id: str, cashout_amount_avail_onchain: int
+                              ):
+    if not CASHOUT_ONCHAIN:
+        logger.error('In do_onchain_cashouts, no CASHOUT_ONCHAIN (address), not cashing out')
+        return
+    if FORCE_CASHOUT_AMOUNT_ONCHAIN:
+        cashout_amount_avail_onchain = FORCE_CASHOUT_AMOUNT_ONCHAIN
+    if cashout_amount_avail_onchain < MIN_ONCHAIN_CASHOUT:
+        logger.info(
+            f"Unable to run onchain cashout due to MIN_ONCHAIN_CASHOUT {cashout_amount_avail_onchain}<{MIN_ONCHAIN_CASHOUT}"
+        )
+        return
+    full_wallet = await api.get_wallet(wallet_id)
+    xpub=full_wallet['xpub']
+    if DRY_RUN_FUNDS:
+        logger.info(
+            f"DRY RUN: For wallet {wallet_id} would attempt to cashout via onchain {cashout_amount_avail_onchain}"
+        )
+    else:
+        logger.info(
+            f"For wallet {wallet_id} Attempting to cashout via onchain {cashout_amount_avail_onchain}"
+        )
+
+    actual_cashout_amount=cashout_amount_avail_onchain
+    if DRY_RUN_FUNDS:
+        logger.info(f"Skipping onchain cashout wallet id {wallet_id} bc DRY_RUN_FUNDS")
+        return
+    transaction_result=await electrum_pay_onchain(xpub,CASHOUT_ONCHAIN,amount=sats_to_btc(actual_cashout_amount),label=CASHOUT_REASON)
+    if transaction_result:
+        updated_counter = SimpleDateTimeField.replace(
+            name="LAST_SUCCESSFUL_ONCHAIN_CASHOUT_PAYMENT", date=datetime.datetime.now()
+        ).execute()
+        return
 async def do_ln_cashouts(api:BitcartAPI,
     wallet_id: str, cashout_amount_avail_ln: int
 ):
@@ -1774,24 +1839,42 @@ async def do_cashouts(api: BitcartAPI) -> Optional[bool]:
         if wallet_id in used_wallets:
             continue
         used_wallets.add(wallet_id)
-        available_ln=0
 
-        for channel in await api.get_wallet_ln_channels(wallet_id,active_only=True,online_only=True):
-            available_ln+=int(channel['local_balance'])
-        if FORCE_CASHOUT_AMOUNT_LN:
-            available_ln=FORCE_CASHOUT_AMOUNT_LN
-        if available_ln < 0:
-            logger.warning(
-                f"Reported negative cashout due for wallet {wallet_id}"
-            )
-            continue
-        if available_ln==0:
-            logger.debug(f'No cashout available for wallet {wallet_id}')
-        try:
-            ln_answer = await do_ln_cashouts(api, wallet_id, available_ln)
-        except Exception as e:
-            logger.error(f'Exception in do_cashouts: {e} {traceback.print_exc()}')
-            return False
+        if PREFER_CASHOUT_ONCHAIN:
+            available_onchain_sats = btc_to_sats(float(best_wallet['balance']))
+            if FORCE_CASHOUT_AMOUNT_ONCHAIN:
+                available_onchain_sats=FORCE_CASHOUT_AMOUNT_ONCHAIN
+            if available_onchain_sats < 0:
+                logger.warning(
+                    f"Reported negative onchain cashout due for wallet {wallet_id}"
+                )
+                continue
+            if available_onchain_sats==0:
+                logger.debug(f'No cashout available for wallet {wallet_id}')
+            try:
+                onchain_answer = await do_onchain_cashouts(api, wallet_id, available_onchain_sats)
+            except Exception as e:
+                logger.error(f'Exception in do_onchain_cashouts: {e} {traceback.print_exc()}')
+                return False
+        # do LN cashouts
+        else:
+            available_ln = 0
+            for channel in await api.get_wallet_ln_channels(wallet_id,active_only=True,online_only=True):
+                available_ln+=int(channel['local_balance'])
+            if FORCE_CASHOUT_AMOUNT_LN:
+                available_ln=FORCE_CASHOUT_AMOUNT_LN
+            if available_ln < 0:
+                logger.warning(
+                    f"Reported negative LN cashout due for wallet {wallet_id}"
+                )
+                continue
+            if available_ln==0:
+                logger.debug(f'No cashout available for wallet {wallet_id}')
+            try:
+                ln_answer = await do_ln_cashouts(api, wallet_id, available_ln)
+            except Exception as e:
+                logger.error(f'Exception in do_ln_cashouts: {e} {traceback.print_exc()}')
+                return False
     return True
 
 async def topup_goal_amount(api:BitcartAPI,store_id:str)->Optional[int]:
@@ -1938,6 +2021,9 @@ async def decide_onchain_to_ln(api:BitcartAPI):
     '''
     Figure out what on-chain funds are safe to spend making channels, make new channels if appropriate
     '''
+    # Don't move funds to LN if we prefer cashout via on-chain
+    if PREFER_CASHOUT_ONCHAIN:
+        return
     store_list=await api.get_stores()
     for store in store_list:
         store_id=store['id']
