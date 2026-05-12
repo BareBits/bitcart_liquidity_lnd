@@ -345,6 +345,137 @@ async def electrum_rpc(method, myxpub: str, params: Dict[str, str] = None):
     )
     return response.json()
 
+
+# ----------------------------------------------------------------------------
+# LND gRPC bridge — counterpart to electrum_rpc for the BareBits LND fork.
+# ----------------------------------------------------------------------------
+import base64 as _base64
+import codecs as _codecs
+
+import grpc as _grpc
+from google.protobuf.json_format import MessageToDict as _MessageToDict
+from google.protobuf.json_format import ParseDict as _ParseDict
+
+from lnd_proto import (
+    chainnotifier_pb2 as _chainnotifier_pb2,
+    chainnotifier_pb2_grpc as _chainnotifier_pb2_grpc,
+    invoices_pb2 as _invoices_pb2,
+    invoices_pb2_grpc as _invoices_pb2_grpc,
+    lightning_pb2 as _lightning_pb2,
+    lightning_pb2_grpc as _lightning_pb2_grpc,
+    router_pb2 as _router_pb2,
+    router_pb2_grpc as _router_pb2_grpc,
+    signer_pb2 as _signer_pb2,
+    signer_pb2_grpc as _signer_pb2_grpc,
+    walletkit_pb2 as _walletkit_pb2,
+    walletkit_pb2_grpc as _walletkit_pb2_grpc,
+)
+
+# service_name -> (stub_class, pb2_module)
+_LND_SERVICES = {
+    "Lightning": (_lightning_pb2_grpc.LightningStub, _lightning_pb2),
+    "Router": (_router_pb2_grpc.RouterStub, _router_pb2),
+    "WalletKit": (_walletkit_pb2_grpc.WalletKitStub, _walletkit_pb2),
+    "Invoices": (_invoices_pb2_grpc.InvoicesStub, _invoices_pb2),
+    "ChainNotifier": (_chainnotifier_pb2_grpc.ChainNotifierStub, _chainnotifier_pb2),
+    "Signer": (_signer_pb2_grpc.SignerStub, _signer_pb2),
+}
+
+# wallet_id -> {"channel": grpc.aio.Channel, "stubs": {service_name: stub}}
+_LND_CONNECTIONS: Dict[str, Dict[str, Any]] = {}
+
+# Match the daemon's MAX_MSG_SIZE so large responses don't get truncated.
+_LND_MAX_MSG_SIZE = 50 * 1024 * 1024
+
+
+async def _get_lnd_connection(api: BitcartAPI, wallet_id: str) -> Dict[str, Any]:
+    """Build (and cache) the gRPC channel + stubs for a wallet."""
+    if wallet_id in _LND_CONNECTIONS:
+        return _LND_CONNECTIONS[wallet_id]
+    info = await api.get_lnd_info(wallet_id)
+    if not info:
+        raise RuntimeError(f"Could not fetch LND info for wallet {wallet_id}")
+    cert = _base64.b64decode(info["tls_cert"])
+    macaroon_hex = _codecs.encode(_base64.b64decode(info["macaroon"]), "hex").decode()
+    ssl_creds = _grpc.ssl_channel_credentials(root_certificates=cert)
+
+    def _macaroon_callback(_context, callback):
+        callback([("macaroon", macaroon_hex)], None)
+
+    creds = _grpc.composite_channel_credentials(
+        ssl_creds, _grpc.metadata_call_credentials(_macaroon_callback)
+    )
+    channel = _grpc.aio.secure_channel(
+        f"{info['host']}:{info['grpc_port']}",
+        creds,
+        options=[
+            ("grpc.max_receive_message_length", _LND_MAX_MSG_SIZE),
+            ("grpc.max_send_message_length", _LND_MAX_MSG_SIZE),
+        ],
+    )
+    stubs = {name: stub_cls(channel) for name, (stub_cls, _) in _LND_SERVICES.items()}
+    conn = {"channel": channel, "stubs": stubs, "info": info}
+    _LND_CONNECTIONS[wallet_id] = conn
+    return conn
+
+
+async def lnd_rpc(
+    api: BitcartAPI,
+    wallet_id: str,
+    method: str,
+    params: Optional[Dict[str, Any]] = None,
+    service: str = "Lightning",
+) -> Union[Dict[str, Any], List[Dict[str, Any]]]:
+    """Bare LND gRPC dispatcher — counterpart to electrum_rpc.
+
+    Resolves connection details for the wallet via api.get_lnd_info (cached),
+    opens a TLS+macaroon gRPC channel (cached), and dispatches `method` on
+    the chosen `service` stub. Request fields come from `params` (dict ->
+    proto via ParseDict). Responses are converted back to plain dicts via
+    MessageToDict with snake_case field names. Server-streaming responses
+    are collected into a list[dict].
+
+    Args:
+        api: BitcartAPI instance for the bitcart server hosting this wallet.
+        wallet_id: bitcart wallet id.
+        method: gRPC method name on `service`, e.g. "ListChannels".
+        params: dict of request fields (snake_case, matching the proto).
+        service: which gRPC service hosts the method. One of:
+                 Lightning, Router, WalletKit, Invoices, ChainNotifier, Signer.
+                 Defaults to Lightning.
+
+    Returns:
+        dict for unary methods, list[dict] for server-streaming methods.
+    """
+    if service not in _LND_SERVICES:
+        raise ValueError(
+            f"Unknown LND gRPC service: {service}. "
+            f"One of: {sorted(_LND_SERVICES)}"
+        )
+    conn = await _get_lnd_connection(api, wallet_id)
+    stub = conn["stubs"][service]
+    _, pb2_module = _LND_SERVICES[service]
+    service_desc = pb2_module.DESCRIPTOR.services_by_name[service]
+    if method not in service_desc.methods_by_name:
+        raise ValueError(f"Unknown gRPC method: {service}.{method}")
+    method_desc = service_desc.methods_by_name[method]
+    if method_desc.client_streaming:
+        raise NotImplementedError(
+            f"{service}.{method} is client-streaming; not supported by lnd_rpc"
+        )
+    request_cls = getattr(pb2_module, method_desc.input_type.name)
+    request = request_cls()
+    if params:
+        _ParseDict(params, request, ignore_unknown_fields=False)
+    rpc_callable = getattr(stub, method)
+    call = rpc_callable(request)
+    if method_desc.server_streaming:
+        return [
+            _MessageToDict(msg, preserving_proto_field_name=True)
+            async for msg in call
+        ]
+    return _MessageToDict(await call, preserving_proto_field_name=True)
+
 async def electrum_pay_onchain(xpub:str,dest_addr:str,label:str,amount:float)->bool:
     """
     Send an on-chain payment. AMOUNT IS IN BTC, NOT SATS

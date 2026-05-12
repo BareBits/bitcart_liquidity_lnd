@@ -5,3 +5,5 @@ peewee
 pytest
 beautifulsoup4
 selenium
+grpcio>=1.78.0
+protobuf

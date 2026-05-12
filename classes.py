@@ -521,6 +521,36 @@ class BitcartAPI:
         except Exception as e:
             print(f"xError retrieving wallets: {e}")
             return None
+    async def get_lnd_info(self, walletid: str) -> Optional[Dict[str, Any]]:
+        """
+        Return LND gRPC connection info for the given wallet.
+
+        Hits the /wallets/{id}/lndinfo endpoint added in the BareBits bitcart
+        fork. Result contains host, grpc_port, network, tls_cert (b64) and
+        macaroon (b64). Cached on the instance keyed by wallet id.
+        """
+        if not hasattr(self, "_lnd_info_cache"):
+            self._lnd_info_cache: Dict[str, Dict[str, Any]] = {}
+        if walletid in self._lnd_info_cache:
+            return self._lnd_info_cache[walletid]
+        try:
+            response = await self.client.get(
+                f"{self.base_url}/wallets/{walletid}/lndinfo",
+                headers=self._get_headers(),
+            )
+            if response.status_code == 200:
+                info = response.json()
+                self._lnd_info_cache[walletid] = info
+                return info
+            logger.error(
+                f"Failed to retrieve LND info for {walletid}: "
+                f"{response.status_code} - {response.text}"
+            )
+            return None
+        except Exception as e:
+            logger.error(f"Error retrieving LND info for {walletid}: {e}")
+            return None
+
     async def get_wallet_ln_node_id(self, walletid:str) -> Optional[str]:
         """
         Return wallets node id/pubkey.
