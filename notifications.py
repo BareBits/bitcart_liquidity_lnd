@@ -1,5 +1,6 @@
 from typing import List,Dict,Set,Optional,Iterable,Literal
-import smtplib,traceback
+import traceback
+import aiosmtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import ssl
@@ -32,29 +33,36 @@ class EmailNotificationProvider(NotificationProvider):
         self.ssl_enabled=ssl_enabled
         self.tls_enabled=tls_enabled
         self.to_email=to_email
-    def test_connection(self)->bool:
+    async def test_connection(self)->bool:
         smtp_host=self.smtp_server
         smtp_port=self.smtp_port
         timeout=30
         if self.ssl_enabled == 'ssl':
-            # Use SMTP_SSL for implicit SSL/TLS
             context = ssl.create_default_context()
-            server = smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=timeout, context=context)
+            server = aiosmtplib.SMTP(
+                hostname=smtp_host, port=smtp_port,
+                timeout=timeout, use_tls=True, tls_context=context,
+            )
         else:
-            # Use regular SMTP for no security or STARTTLS
-            server = smtplib.SMTP(smtp_host, smtp_port, timeout=timeout)
-
-            if self.tls_enabled:
-                # Upgrade connection to TLS
+            server = aiosmtplib.SMTP(
+                hostname=smtp_host, port=smtp_port,
+                timeout=timeout, use_tls=False,
+            )
+        await server.connect()
+        try:
+            if self.tls_enabled and self.ssl_enabled != 'ssl':
                 context = ssl.create_default_context()
-                server.starttls(context=context)
-
-        # Authenticate if credentials provided
-        if self.username and self.password:
-            server.login(self.username, self.password)
+                await server.starttls(tls_context=context)
+            if self.username and self.password:
+                await server.login(self.username, self.password)
+        finally:
+            try:
+                await server.quit()
+            except Exception:
+                pass
         return True
 
-    def send_email(
+    async def send_email(
             self,
             subject: str,
             body: str,
@@ -70,7 +78,10 @@ class EmailNotificationProvider(NotificationProvider):
             body_type: Literal['plain', 'html'] = 'plain'
     ) -> bool:
         """
-        Send an email via SMTP.
+        Send an email via SMTP — async so the up-to-30s TCP+TLS
+        handshake never blocks the event loop (was sync `smtplib`,
+        which froze the Bitcart worker whenever the SMTP server
+        was flaky).
 
         Args:
             dest_email: Recipient email address
@@ -103,72 +114,67 @@ class EmailNotificationProvider(NotificationProvider):
         if not password:
             password=self.password
         try:
-            # Create message
             msg = MIMEMultipart()
             msg['From'] = f"{from_name} <{from_email}>"
             msg['To'] = dest_email
             msg['Subject'] = subject
-
-            # Attach body
             msg.attach(MIMEText(body, body_type))
 
-            # Initialize SMTP connection based on security type
             if security == 'ssl':
-                # Use SMTP_SSL for implicit SSL/TLS
                 context = ssl.create_default_context()
-                server = smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=timeout, context=context)
+                server = aiosmtplib.SMTP(
+                    hostname=smtp_host, port=smtp_port,
+                    timeout=timeout, use_tls=True, tls_context=context,
+                )
             else:
-                # Use regular SMTP for no security or STARTTLS
-                server = smtplib.SMTP(smtp_host, smtp_port, timeout=timeout)
-
+                server = aiosmtplib.SMTP(
+                    hostname=smtp_host, port=smtp_port,
+                    timeout=timeout, use_tls=False,
+                )
+            await server.connect()
+            try:
                 if security == 'starttls':
-                    # Upgrade connection to TLS
                     context = ssl.create_default_context()
-                    server.starttls(context=context)
-
-            # Authenticate if credentials provided
-            if username and password:
-                server.login(username, password)
-
-            # Send email
-            server.send_message(msg)
-            server.quit()
-
+                    await server.starttls(tls_context=context)
+                if username and password:
+                    await server.login(username, password)
+                await server.send_message(msg)
+            finally:
+                try:
+                    await server.quit()
+                except Exception:
+                    pass
             return True
 
-        except smtplib.SMTPAuthenticationError as e:
+        except aiosmtplib.SMTPAuthenticationError as e:
             logger.error(f"Authentication failed: {e}")
             return False
 
-        except smtplib.SMTPConnectError as e:
+        except aiosmtplib.SMTPConnectError as e:
             logger.error(f"Failed to connect to SMTP server: {e}")
             return False
 
-        except smtplib.SMTPServerDisconnected as e:
+        except aiosmtplib.SMTPServerDisconnected as e:
             logger.error(f"Server disconnected unexpectedly: {e}")
             return False
 
-        except smtplib.SMTPRecipientsRefused as e:
+        except aiosmtplib.SMTPRecipientsRefused as e:
             logger.error(f"Recipient address refused: {e}")
             return False
 
-        except smtplib.SMTPSenderRefused as e:
+        except aiosmtplib.SMTPSenderRefused as e:
             logger.error(f"Sender address refused: {e}")
             return False
 
-        except smtplib.SMTPDataError as e:
+        except aiosmtplib.SMTPDataError as e:
             logger.error(f"SMTP data error: {e}")
             return False
 
-        except smtplib.SMTPHeloError as e:
+        except aiosmtplib.SMTPHeloError as e:
             logger.error(f"SMTP HELO error: {e}")
             return False
 
-        except smtplib.SMTPNotSupportedError as e:
-            logger.error(f"SMTP command not supported: {e}")
-            return False
-
-        except smtplib.SMTPException as e:
+        except aiosmtplib.SMTPException as e:
             logger.error(f"SMTP error occurred: {e}")
             return False
 
@@ -188,8 +194,8 @@ class EmailNotificationProvider(NotificationProvider):
             logger.error(f"Unexpected error: {e} ")
             traceback.print_exc()
             return False
-    def notify(self,
+    async def notify(self,
                subject: str,
                body: str,
                ):
-        self.send_email(subject=subject,body=body)
+        await self.send_email(subject=subject,body=body)

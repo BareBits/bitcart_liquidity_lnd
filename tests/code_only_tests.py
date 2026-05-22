@@ -114,24 +114,44 @@ def test_BitcartInvoice():
     assert not classified_invoice.is_bb_topup_invoice()
 
 def test_should_close_channel():
-    # test if local > threshold
-    local_balance=1
-    remote_balance=0
-    local_threshold=0
-    remote_threshold=0
-    assert should_close_channel(local_balance,remote_balance,local_threshold,remote_threshold)
-    # test if remote < threshold
-    local_balance = 0
-    remote_balance = 0
-    local_threshold = 0
-    remote_threshold = 1
-    assert should_close_channel(local_balance, remote_balance, local_threshold, remote_threshold)
-    # test if zero remote
-    local_balance = 1
-    remote_balance = 0
-    local_threshold = 2
-    remote_threshold = 0
-    assert should_close_channel(local_balance, remote_balance, local_threshold, remote_threshold)
+    # should_close_channel(failed_checks, total_checks, last_online,
+    #                     check_interval_in_seconds, *, now=None)
+    # returns (reason: str, ok: bool). Each branch passes an explicit `now`
+    # so the OFFLINE_RECENTLY 48-hour edge is deterministic (not subject to
+    # wall-clock drift between test runs).
+    now = datetime.datetime(2026, 1, 15, 12, 0, 0)
+    week_ago = now - datetime.timedelta(days=8)
+    two_days_ago = now - datetime.timedelta(hours=49)
+    just_now = now - datetime.timedelta(seconds=1)
+
+    # Under the failed-check floor — never close, even with everything else aggressive.
+    reason, ok = should_close_channel(4, 1000, week_ago, 600, now=now)
+    assert ok is False and reason == ""
+
+    # Failed checks >= 5 but monitoring window < 1 hour — not enough data, no close.
+    # freq=60s * total=10 = 600s < 3600s.
+    reason, ok = should_close_channel(5, 10, week_ago, 60, now=now)
+    assert ok is False and reason == ""
+
+    # SHORT_TERM_UNRELIABLE: failed ratio > 10% over a > 1-week window, peer
+    # currently up — close anyway because the ratio is bad.
+    # freq=1000s * total=1000 = 1_000_000s > 7 days; failed=200 => ratio=0.20.
+    reason, ok = should_close_channel(200, 1000, just_now, 1000, now=now)
+    assert ok is True and reason == "SHORT_TERM_UNRELIABLE"
+
+    # OFFLINE_RECENTLY: low failed ratio, but peer hasn't been seen in > 48h.
+    # freq=10s * total=1000 = 10_000s > 3600s; failed=5 => ratio=0.005.
+    reason, ok = should_close_channel(5, 1000, two_days_ago, 10, now=now)
+    assert ok is True and reason == "OFFLINE_RECENTLY"
+
+    # Exactly at the 48-hour edge — should NOT close (strict less-than).
+    edge = now - datetime.timedelta(hours=48)
+    reason, ok = should_close_channel(5, 1000, edge, 10, now=now)
+    assert ok is False and reason == ""
+
+    # Healthy: enough monitoring, ratio fine, peer seen recently.
+    reason, ok = should_close_channel(5, 1000, just_now, 10, now=now)
+    assert ok is False and reason == ""
 
 def test_distribute_sats_over_channels():
 
@@ -161,23 +181,12 @@ def test_distribute_sats_over_channels():
     assert sum(answer) == sats
 
 
-@pytest.fixture(scope='function')
-def test_db():
-    # 1. Create an in-memory SQLite database
-    test_db = peewee.SqliteDatabase(':memory:')
+# The `_isolated_state` autouse fixture in conftest.py now rebinds peewee to
+# per-test in-memory SQLite, so an explicit `test_db` fixture is no longer
+# needed.
 
-    # 3. Connect and create tables
-    test_db.bind(database.USED_TABLES, bind_refs=False, bind_backrefs=False)
-    test_db.connect()
-    test_db.create_tables(database.USED_TABLES)
 
-    # 4. Yield control to the test function
-    yield test_db
-
-    # 5. Teardown: close the connection and drop tables
-    test_db.close()
-
-def test_notifications(test_db):
+def test_notifications():
     from database import Notification,LastRunTracker
     # This test starts with a clean database due to the fixture's scope
     temp = Notification.create(type='LOWLIQ', body='')

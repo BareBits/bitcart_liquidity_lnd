@@ -29,10 +29,30 @@ export ALLOW_INCOMING_CHANNELS=true
 
 
 ## How to use
-1. Download this repository with git clone
-2. Provide the proper config variables, you can do this via environment variables or by copying `config.py` to `user_config.py` and modifying from there. Environment variables override anything found in config files. At a minimum, you need to provide `CASHOUT_LIGHTNING_ADDRESS` and `AUTH_TOKEN`. You can find your auth token in Bitcart by going to User Profile -> API keys.
-3. Run `pip install -r requirements.txt`
-3. Run `python3 liquidityhelper.py`
+
+You can run this either as a **standalone script** (existing path — talks to Bitcart over its public HTTP API) or as a **Bitcart plugin** (loaded into Bitcart's process; settings configurable through the Bitcart admin UI). Both paths use the same engine code; the difference is purely how the engine gets bootstrapped and where its settings come from.
+
+### Option A — Standalone (external script)
+
+1. `git clone` this repository onto the server.
+2. Provide config either via `user_config.py` (copy `config.py` as the starting template) or via environment variables — env wins over both files. At minimum set `CASHOUT_LIGHTNING_ADDRESS` and `AUTH_TOKEN`. Get your auth token from Bitcart at User Profile → API keys.
+3. `pip install -r requirements.txt`
+4. `python3 liquidityhelper.py`
+
+### Option B — Bitcart plugin
+
+1. Copy this entire directory into Bitcart's `modules/barebits/liquidityhelper/` directory (path is enforced by `manifest.json` — `author` = BareBits, `name` = liquidityhelper).
+2. Restart Bitcart. The plugin's settings page becomes available under the admin UI; every value in `config.py` is exposed there as an editable field with the same name.
+3. On first boot the plugin auto-acquires a long-lived bearer token tagged with `app_id=plugin:liquidityhelper`, bound to the first superuser. If you're installing into a brand-new Bitcart (no admin yet), set `ADMIN_EMAIL` and `ADMIN_PASSWORD` in the plugin settings — the plugin will create the first admin via the same `POST /users/` path the standalone script uses, then bind to it.
+
+**Settings precedence** (highest wins): plugin UI > environment variables > `user_config.py` > `config.py` defaults. Edits in the plugin UI are applied live to the running engine — no Bitcart restart needed.
+
+**Logs viewer** — after install, visit `/plugins/liquidityhelper` in the Bitcart admin to get a tabbed view with **Settings** and **Logs**. The Logs tab lets you switch between:
+- **Operational** — the full firehose (`liquidityhelper.log`)
+- **Decisions** — the audit log of what the script actually decided to do (`decisions.log`)
+…with an adjustable tail size (100–5000 lines) and an optional 3-second auto-refresh. Logs are also still written to the engine's working directory in standalone mode.
+
+**Standalone code path is unaffected by plugin mode**; the same `config.py` defaults still drive `python3 liquidityhelper.py` for users who don't want the in-process integration.
 
 ## How it works
 - The script monitors the amount of available inbound liquidity on your server. If liquidity is below your set threshold, it will open new lightning channels using your on-chain funds, then empty those channels to your payout lightning address (so you now have inbound liquidity)

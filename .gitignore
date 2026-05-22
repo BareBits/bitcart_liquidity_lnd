@@ -5,6 +5,10 @@ user_config.py
 *.iml
 *.idea
 *.json
+.venv/
+venv/
+__pycache__/
+.pytest_cache/
 */.venv/*
 */venv/*
 */.idea/*
@@ -18,3 +22,13 @@ lightning_helpers_helpers.py
 /test3.py
 /test4.py
 /test5.py
+
+# Pre-built Lightning Labs loop daemon binaries. ~130 MB on disk and
+# downloaded on first use by swap_providers.ensure_loop_binaries(),
+# so they should never live in version control.
+loop_bin/
+
+# Python build / coverage / cache artefacts
+*.pyc
+.coverage
+.coverage.*
