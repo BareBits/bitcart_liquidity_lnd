@@ -121,9 +121,11 @@ MIN_LN_CASHOUT_IN_SATS: int = 150
 
 # Lightning Address the LN leg cashes out to. Format `name@host`. Can
 # be a custodian (Strike, CoinOS) or a self-hosted address. Required
-# for ENABLE_CASHOUT_LN. Default points at the BareBits cashout demo;
-# change to your address before going live.
-CASHOUT_LIGHTNING_ADDRESS: Optional[str] = "cashout@getbarebits.com"
+# for ENABLE_CASHOUT_LN. Intentionally unset by default so a fresh
+# install can't accidentally sweep funds to a placeholder address —
+# the operator must set this to an address they control before
+# enabling LN cashouts.
+CASHOUT_LIGHTNING_ADDRESS: Optional[str] = None
 
 # On-chain Bitcoin address for cashouts and (if LOOP_OUT_ENABLED) for
 # loop-out drain output. Bech32 / P2TR / P2WPKH all accepted. Required
