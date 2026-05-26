@@ -1,6 +1,25 @@
 # Short functions used by various files INCLUDING config file
 from typing import List,Dict,Tuple,Iterable,Any,Set
+import datetime
 import math
+
+
+def utcnow_naive() -> datetime.datetime:
+    """Naive UTC timestamp. Use everywhere the engine writes or
+    compares datetimes — including LightningNode rows, SimpleDateTime-
+    Field markers, and find_offline_channels.
+
+    The engine mixes two writer paths: gossip-pull paths that come
+    from LND's GetInfo/DescribeGraph (UTC unix timestamps) and direct-
+    call paths that previously used `datetime.now()` (LOCAL time).
+    Comparing rows written by the two paths drifts by the host's TZ
+    offset, which mis-classifies peers near the LONG_OUTAGE boundary.
+    Using this helper everywhere keeps the two paths consistent.
+
+    Returns naive (not tz-aware) for compatibility with peewee's
+    DateTimeField (SQLite stores ISO strings without tz info; mixing
+    aware and naive in comparisons would raise TypeError)."""
+    return datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
 def is_integer(string):
     try:
         int(string)

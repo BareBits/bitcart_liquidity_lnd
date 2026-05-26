@@ -357,10 +357,32 @@ class Plugin(BasePlugin):
                     await self._loop_task
                 except (asyncio.CancelledError, Exception):
                     pass
+        # Drain engine resources before the log listener stops so any
+        # errors during teardown still get logged. Three sources of
+        # leaks across plugin reloads:
+        #   - loopd subprocesses (one per wallet, holding gRPC ports)
+        #   - cached LND gRPC channels (FDs + connection pools)
+        # If we don't shut these down, the next plugin reload either
+        # accumulates duplicates or fails to bind ports.
+        try:
+            from liquidityhelper import close_all_lnd_connections
+            await close_all_lnd_connections()
+        except Exception:
+            logger.exception("plugin shutdown: close_all_lnd_connections failed")
+        try:
+            from liquidityhelper import close_shared_tick_api
+            await close_shared_tick_api()
+        except Exception:
+            logger.exception("plugin shutdown: close_shared_tick_api failed")
+        try:
+            from swap_providers import _LOOPD_MANAGER
+            await _LOOPD_MANAGER.stop_all()
+        except Exception:
+            logger.exception("plugin shutdown: LoopdManager.stop_all() failed")
         # Flush the engine's background log listener so the final
         # records make it to disk before Bitcart tears the process down.
         try:
-            from .liquidityhelper import stop_log_listener
+            from liquidityhelper import stop_log_listener
             stop_log_listener()
         except Exception:
             pass

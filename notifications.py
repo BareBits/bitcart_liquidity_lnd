@@ -193,8 +193,7 @@ class EmailNotificationProvider(NotificationProvider):
             return False
 
         except Exception as e:
-            logger.error(f"Unexpected error: {e} ")
-            traceback.print_exc()
+            logger.error(f"Unexpected error: {e} {traceback.format_exc()}")
             return False
     async def notify(self, body: str, subject: Optional[str]) -> bool:
         return await self.send_email(subject=subject, body=body)

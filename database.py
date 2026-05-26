@@ -1,9 +1,12 @@
 import peewee
 from peewee import *
 from datetime import datetime,timedelta
+import logging
 import os
 from typing import Optional,List,Dict,Set,Iterable,Tuple,Any
 import os as _os
+
+logger = logging.getLogger("liquidityhelper.database")
 
 def _resolve_db_path() -> str:
     """Pick a writable location for the SQLite file.
@@ -129,7 +132,7 @@ def create_order(order_id, date=None):
         date = datetime.now()
 
     request = LOrder.create(order_id=order_id, date=date)
-    print(f"Created order with ID: {order_id}")
+    logger.debug(f"Created order with ID: {order_id}")
     return request
 def count_notifications_sent(since_date:Optional[datetime]=None, notification_type:Optional[str]=None)->int:
     """
@@ -190,8 +193,8 @@ def _migrate_simpledatetimefield_uniqueness(_db=db) -> None:
         # Failure here shouldn't crash startup — the feature degrades
         # gracefully (duplicates linger but get_last_date still returns
         # the most-recent row via order_by(date.desc())).
-        print(f"SimpleDateTimeField migration skipped: {e}")
+        logger.warning(f"SimpleDateTimeField migration skipped: {e}")
 
 
 _migrate_simpledatetimefield_uniqueness()
-print(f"Database '{DATABASE_NAME}' initialized successfully")
+logger.info(f"Database '{DATABASE_NAME}' initialized successfully")

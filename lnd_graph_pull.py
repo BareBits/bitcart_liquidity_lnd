@@ -46,6 +46,7 @@ from typing import Iterable, Iterator, Optional, Tuple
 
 import grpc
 
+from common_functions import utcnow_naive
 from lnd_proto import lightning_pb2, lightning_pb2_grpc
 from node_database import LightningNode
 
@@ -882,7 +883,9 @@ def upsert_lightning_node(
     # rather than in iter_graph_candidates because we need the
     # GetNodeInfo data to know channel ages.
     if oldest is not None:
-        age_days = (datetime.datetime.now() - oldest).days
+        # `oldest` is UTC-naive (from estimate_block_time via fromtimestamp(..., tz=UTC).replace(tzinfo=None)).
+        # Use utcnow_naive() for the comparison so the math is in the same timezone.
+        age_days = (utcnow_naive() - oldest).days
         if age_days < min_age_days:
             return None
 
@@ -894,11 +897,11 @@ def upsert_lightning_node(
             number_of_channels=num_channels,
             total_capacity=total_capacity,
             smallest_channel_size=smallest,
-            oldest_known_date=oldest or datetime.datetime.now(),
+            oldest_known_date=oldest or utcnow_naive(),
             tor_address=addresses.tor,
             ipv4_address=addresses.ipv4,
             ipv6_address=addresses.ipv6,
-            last_lnd_query=datetime.datetime.now(),
+            last_lnd_query=utcnow_naive(),
             lnd_queries=1,
             last_seen_online=last_seen,
             median_outbound_fee_rate_ppm=median_fee_ppm,
@@ -951,7 +954,7 @@ def upsert_lightning_node(
     # effective edges between pulls correctly drops below the floor.
     existing.effective_channel_count = effective_degree
     existing.two_hop_reach = two_hop_reach
-    existing.last_lnd_query = datetime.datetime.now()
+    existing.last_lnd_query = utcnow_naive()
     existing.lnd_queries = (existing.lnd_queries or 0) + 1
     existing.set_oldest_known_date()
     existing.save()

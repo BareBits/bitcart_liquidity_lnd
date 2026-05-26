@@ -310,35 +310,55 @@ class LoopdInstance:
         # Subprocess has dup'd the FD; close our local one.
         log.close()
 
-        # Wait for loopd to publish its own tls.cert + loop.macaroon
-        # AND for the RPC port to be listening. 120 iterations × 0.5s
-        # = 60 seconds of patience.
-        for _ in range(120):
-            if self.loop_tls_cert_path.exists() and self.loop_macaroon_path.exists():
-                try:
-                    reader, writer = await asyncio.wait_for(
-                        asyncio.open_connection("127.0.0.1", self.rpc_port),
-                        timeout=1.0,
-                    )
-                except (OSError, asyncio.TimeoutError):
-                    pass
-                else:
-                    writer.close()
+        # Once the subprocess is spawned, any exception below leaves it
+        # alive but unreferenced (caller in LoopdManager.get_loopd_for_
+        # wallet won't reach `_instances[wid] = instance`). That
+        # orphan would hold the rpc_port and prevent the next start
+        # from binding. Wrap the readiness wait so we self-stop on any
+        # failure path before re-raising.
+        try:
+            # Wait for loopd to publish its own tls.cert + loop.macaroon
+            # AND for the RPC port to be listening. 120 iterations × 0.5s
+            # = 60 seconds of patience.
+            for _ in range(120):
+                if self.loop_tls_cert_path.exists() and self.loop_macaroon_path.exists():
                     try:
-                        await writer.wait_closed()
-                    except Exception:
+                        reader, writer = await asyncio.wait_for(
+                            asyncio.open_connection("127.0.0.1", self.rpc_port),
+                            timeout=1.0,
+                        )
+                    except (OSError, asyncio.TimeoutError):
                         pass
-                    return
-            if self.proc.returncode is not None:
-                raise RuntimeError(
-                    f"loopd {self.wallet_id} exited early; "
-                    f"check {self.data_dir / 'loopd.log'}"
+                    else:
+                        writer.close()
+                        try:
+                            await writer.wait_closed()
+                        except Exception:
+                            pass
+                        return
+                if self.proc.returncode is not None:
+                    raise RuntimeError(
+                        f"loopd {self.wallet_id} exited early; "
+                        f"check {self.data_dir / 'loopd.log'}"
+                    )
+                await asyncio.sleep(0.5)
+            raise RuntimeError(
+                f"loopd {self.wallet_id} never published tls.cert + macaroon "
+                f"within 60s"
+            )
+        except Exception:
+            # Self-clean before re-raising so the caller doesn't have
+            # to. `stop()` is idempotent — safe even if `self.proc`
+            # has already exited.
+            try:
+                await self.stop()
+            except Exception:
+                # Cleanup failure shouldn't mask the original error;
+                # log and continue with the original exception.
+                logger.exception(
+                    f"loopd {self.wallet_id}: cleanup failed during start() rollback"
                 )
-            await asyncio.sleep(0.5)
-        raise RuntimeError(
-            f"loopd {self.wallet_id} never published tls.cert + macaroon "
-            f"within 60s"
-        )
+            raise
 
     async def stop(self) -> None:
         """Terminate the subprocess and wait for it to exit.

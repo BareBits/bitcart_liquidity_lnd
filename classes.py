@@ -342,7 +342,7 @@ class BitcartAPI:
                     if 'result' not in jsoned:
                         if 'detail' in jsoned:
                             if jsoned['detail']=='Could not validate credentials':
-                                logger.error(f"Error retrieving query: {traceback.print_exc()}")
+                                logger.error(f"Error retrieving query: {traceback.format_exc()}")
                                 return None
                     results_to_return.extend(jsoned['result'])
                     if jsoned['next']:
@@ -350,7 +350,7 @@ class BitcartAPI:
                     else:
                         return response, results_to_return
         except Exception as e:
-            logger.error(f"Error retrieving query: {e} {traceback.print_exc()}")
+            logger.error(f"Error retrieving query: {e} {traceback.format_exc()}")
             raise
     async def setup_first_user(self,email:str,password:str)->Optional[str]:
         """
@@ -422,7 +422,7 @@ class BitcartAPI:
                 total_outbound+=channel['local_balance']
             return total_outbound
         except Exception as e:
-            print(f"Error retrieving store by id: {e}")
+            logger.error(f"Error retrieving store by id: {e}")
             return None
     async def get_store_inbound_liquidity(self, store_id:str) -> Optional[int]:
         """
@@ -445,7 +445,7 @@ class BitcartAPI:
                     total_inbound+=channel['remote_balance']
             return total_inbound
         except Exception as e:
-            print(f"Error retrieving store by id: {e}")
+            logger.error(f"Error retrieving store by id: {e}")
             return None
     async def get_store_total_liquidity(self, store_id:str) -> Optional[int]:
         """
@@ -472,7 +472,7 @@ class BitcartAPI:
                 total += float(channel['remote_balance'])
             return total
         except Exception as e:
-            print(f"Error retrieving store total liq: {e} {traceback.print_exc()}")
+            logger.error(f"Error retrieving store total liq: {e} {traceback.format_exc()}")
             return None
     async def get_wallets(self, limit: int = 50, offset: int = 0) -> Optional[List[Dict]]:
         """
@@ -499,7 +499,7 @@ class BitcartAPI:
             return results
 
         except Exception as e:
-            print(f"Error retrieving wallets: {e}")
+            logger.error(f"Error retrieving wallets: {e}")
             return None
     async def get_payouts(self) -> Optional[List[Dict]]:
         """
@@ -517,7 +517,7 @@ class BitcartAPI:
             return results
 
         except Exception as e:
-            print(f"Error retrieving payouts: {e}")
+            logger.error(f"Error retrieving payouts: {e}")
             return None
     async def get_wallet(self, wallet_id:str,limit: int = 50, offset: int = 0) -> Optional[Dict]:
         """
@@ -546,11 +546,11 @@ class BitcartAPI:
             if response.status_code == 200:
                 return response.json()
             else:
-                print(f"Failed to retrieve wallets: {response.status_code} - {response.text}")
+                logger.error(f"Failed to retrieve wallets: {response.status_code} - {response.text}")
                 return None
 
         except Exception as e:
-            print(f"Error retrieving wallets: {e}")
+            logger.error(f"Error retrieving wallets: {e}")
             return None
     async def get_store_by_id(self, store_id:str) -> Optional[Dict]:
         """
@@ -570,11 +570,11 @@ class BitcartAPI:
             if response.status_code == 200:
                 return response.json()
             else:
-                print(f"Failed to retrieve store by id: {response.status_code} - {response.text}")
+                logger.error(f"Failed to retrieve store by id: {response.status_code} - {response.text}")
                 return None
 
         except Exception as e:
-            print(f"Error retrieving store by id: {e}")
+            logger.error(f"Error retrieving store by id: {e}")
             return None
     async def get_best_ln_wallet_for_store(self,store:dict) -> Optional[Dict[str,Any]]:
         """
@@ -592,7 +592,7 @@ class BitcartAPI:
             for known_wallet in sorted(store['wallets']):
                 retrieved_wallet=await self.get_wallet(known_wallet)
                 if not isinstance(retrieved_wallet,dict):
-                    print('Err 7774353')
+                    logger.error('Err 7774353')
                     continue
                 if not retrieved_wallet.get('lightning_enabled', False):
                     continue
@@ -608,7 +608,7 @@ class BitcartAPI:
                 else:
                     return None
         except Exception as e:
-            print(f"xError retrieving wallets: {e}")
+            logger.error(f"xError retrieving wallets: {e}")
             return None
     async def get_lnd_info(self, walletid: str) -> Optional[Dict[str, Any]]:
         """
@@ -661,11 +661,11 @@ class BitcartAPI:
             if response.status_code == 200:
                 return response.json()
             else:
-                print(f"Failed to retrieve wallets: {response.status_code} - {response.text}")
+                logger.error(f"Failed to retrieve wallets: {response.status_code} - {response.text}")
                 return None
 
         except Exception as e:
-            print(f"Error retrieving wallets: {e}")
+            logger.error(f"Error retrieving wallets: {e}")
             return None
     # Bidialect channel-state sets. Bitcart's /wallets/{id}/channels
     # endpoint passes through whatever the underlying daemon emits, so
@@ -755,7 +755,7 @@ class BitcartAPI:
                 )
             return return_list
         except Exception as e:
-            print(f"Error retrieving channels: {e}")
+            logger.error(f"Error retrieving channels: {e}")
             return None
     async def get_stores(self) -> Optional[List[Dict[str,Any]]]:
         """
@@ -771,7 +771,7 @@ class BitcartAPI:
 
             return storelist
         except Exception as e:
-            print(f"Error retrieving stores: {e}")
+            logger.error(f"Error retrieving stores: {e}")
             return None
     async def get_invoice_by_note(self, limit: int = 250,
                            note:Optional[str]=None,require_unlimited:bool=False) -> Optional[List[Dict]]:
@@ -810,11 +810,11 @@ class BitcartAPI:
                                 return invoice
                 return None
             else:
-                print(f"Failed to retrieve invoices: {response.status_code} - {response.text}")
+                logger.error(f"Failed to retrieve invoices: {response.status_code} - {response.text}")
                 return None
 
         except Exception as e:
-            print(f"Error retrieving invoices: {e}")
+            logger.error(f"Error retrieving invoices: {e}")
             return None
     async def get_invoices(self, limit: int = 50, offset: int = 0,
                            store_id: str = None) -> Optional[List[Dict]]:
@@ -846,7 +846,7 @@ class BitcartAPI:
             return results
 
         except Exception as e:
-            print(f"Error retrieving invoices: {e}")
+            logger.error(f"Error retrieving invoices: {e}")
             return None
 
 
@@ -866,7 +866,7 @@ class BitcartAPI:
                 if channel['channel_id']==channel_id:
                     return channel
         except Exception as e:
-            print(f"Error retrieving channel {channel_id}: {e}")
+            logger.error(f"Error retrieving channel {channel_id}: {e}")
             return None
         return None
     async def get_invoice_by_id(self, invoice_id: str) -> Optional[Dict]:
@@ -887,11 +887,11 @@ class BitcartAPI:
             if response.status_code == 200:
                 return response.json()
             else:
-                print(f"Failed to retrieve invoice {invoice_id}: {response.status_code}")
+                logger.error(f"Failed to retrieve invoice {invoice_id}: {response.status_code}")
                 return None
 
         except Exception as e:
-            print(f"Error retrieving invoice {invoice_id}: {e}")
+            logger.error(f"Error retrieving invoice {invoice_id}: {e}")
             return None
 
     async def add_wallet_to_store(self, wallet_ids: List[str], store_id: str) -> bool:
@@ -919,11 +919,11 @@ class BitcartAPI:
             if response.status_code == 200:
                 return True
             else:
-                print(f"Failed to add wallet to store. Store {store_id} wallets {wallet_ids} {response.text}")
+                logger.error(f"Failed to add wallet to store. Store {store_id} wallets {wallet_ids} {response.text}")
                 return False
 
         except Exception as e:
-            print(f"Error adding wallet to store {store_id} invoice: {e}")
+            logger.error(f"Error adding wallet to store {store_id} invoice: {e}")
             return False
     async def close_ln_channel(self,wallet_id:str,channel_point:str,force:bool=False) -> Optional[str]:
         """
@@ -949,11 +949,11 @@ class BitcartAPI:
             if response.status_code == 200:
                 return response.json()
             else:
-                print(f"Failed to close channel: {response.status_code} - {response.text}")
+                logger.error(f"Failed to close channel: {response.status_code} - {response.text}")
                 return None
 
         except Exception as e:
-            print(f"Error closing channel: {e}")
+            logger.error(f"Error closing channel: {e}")
             return None
     async def open_ln_channel(self,wallet_id:str,dest_node:str,amount_in_btc:float) -> Optional[Dict]:
         """
@@ -983,7 +983,7 @@ class BitcartAPI:
                 return None
 
         except Exception as e:
-            print(f"1Error creating channel: {e}")
+            logger.error(f"1Error creating channel: {e}")
             return None
     async def create_wallet_seed(self,) -> Optional[Dict]:
         """
@@ -1009,11 +1009,11 @@ class BitcartAPI:
             if response.status_code == 200:
                 return response.json()
             else:
-                print(f"Failed to create invoice: {response.status_code} - {response.text}")
+                logger.error(f"Failed to create invoice: {response.status_code} - {response.text}")
                 return None
 
         except Exception as e:
-            print(f"Error creating invoice: {e}")
+            logger.error(f"Error creating invoice: {e}")
             return None
     async def is_channel_change_pending(self,wallet_id:str)->bool:
         """
@@ -1039,7 +1039,7 @@ class BitcartAPI:
                     return True
             return False
         except Exception as e:
-            print(f'Error in is_channel_close_pending: {e}')
+            logger.error(f'Error in is_channel_close_pending: {e}')
             return True
     async def is_channel_open_pending(self,wallet_id:str)->bool:
         """
@@ -1057,7 +1057,7 @@ class BitcartAPI:
                     return True
             return False
         except Exception as e:
-            print(f'Error in is_channel_open_pending: {e}')
+            logger.error(f'Error in is_channel_open_pending: {e}')
             return True
     async def create_wallet(self,seed:str) -> Optional[Dict]:
         """
@@ -1085,11 +1085,11 @@ class BitcartAPI:
             if response.status_code == 200:
                 return response.json()
             else:
-                print(f"Failed to create wallet: {response.status_code} - {response.text}")
+                logger.error(f"Failed to create wallet: {response.status_code} - {response.text}")
                 return None
 
         except Exception as e:
-            print(f"Error creating wallet: {e}")
+            logger.error(f"Error creating wallet: {e}")
             return None
     async def create_store(self,store_name:str,wallet_id_list:List[str]) -> Optional[Dict]:
         """
@@ -1118,7 +1118,7 @@ class BitcartAPI:
                 return None
 
         except Exception as e:
-            print(f"Error creating payout: {e}")
+            logger.error(f"Error creating payout: {e}")
             return None
     async def create_payout_onchain(self,store_id:str,wallet_id:str,amount_in_sats:int,destination_address:str,max_fee:int=None,reason:str='') -> Optional[Dict]:
         """
@@ -1148,11 +1148,11 @@ class BitcartAPI:
             if response.status_code == 200:
                 return response.json()
             else:
-                print(f"1Failed to create payout: {response.status_code} - {response.text}")
+                logger.error(f"1Failed to create payout: {response.status_code} - {response.text}")
                 return None
 
         except Exception as e:
-            print(f"Error creating payout: {e}")
+            logger.error(f"Error creating payout: {e}")
             return None
     async def create_invoice(self, price_in_btc: Optional[float], store_id: int, currency: str = "USD",
                              order_id: str = None, description: str = "",
@@ -1205,11 +1205,11 @@ class BitcartAPI:
             if response.status_code == 200:
                 return response.json()
             else:
-                print(f"Failed to create invoice: {response.status_code} - {response.text}")
+                logger.error(f"Failed to create invoice: {response.status_code} - {response.text}")
                 return None
 
         except Exception as e:
-            print(f"Error creating invoice: {e}")
+            logger.error(f"Error creating invoice: {e}")
             return None
 
     async def get_btc_usd_rate(self) -> Optional[float]:

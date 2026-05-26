@@ -2,6 +2,7 @@ import datetime,os
 from datetime import datetime, timedelta
 from typing import List,Dict,Set,Union,Tuple,Any,Optional
 from peewee import Model, CharField, BigIntegerField, DateTimeField, IntegerField, SqliteDatabase,FloatField,BooleanField
+from common_functions import utcnow_naive
 
 from config import (
     NODE_CRITERIA_MINIMUM_CHANNELCOUNT, NODE_CRITERIA_MINIMUM_AGE,
@@ -82,7 +83,7 @@ class BaseModel(Model):
         timestamps in tests) are preserved.
         """
         if self._auto_now_on_insert_fields:
-            now = datetime.now()
+            now = utcnow_naive()
             for field_name in self._auto_now_on_insert_fields:
                 if getattr(self, field_name, None) is None:
                     setattr(self, field_name, now)
@@ -208,7 +209,7 @@ class LightningNode(BaseModel):
         # please refresh").
         if self.last_lnd_query is None:
             return True
-        time_between_insertion = datetime.now() - self.last_lnd_query
+        time_between_insertion = utcnow_naive() - self.last_lnd_query
 
         if time_between_insertion.days > update_frequency_in_days:
             return True
@@ -425,7 +426,7 @@ def _evaluate_uptime_signals(node:LightningNode)->List[str]:
 
     # LONG_OUTAGE check first (cheaper, no division)
     if node.last_seen_online is not None:
-        outage_threshold = datetime.now() - timedelta(days=UPTIME_LONG_OUTAGE_DAYS)
+        outage_threshold = utcnow_naive() - timedelta(days=UPTIME_LONG_OUTAGE_DAYS)
         if node.last_seen_online < outage_threshold:
             reasons.append('LONG_OUTAGE')
 
@@ -434,7 +435,7 @@ def _evaluate_uptime_signals(node:LightningNode)->List[str]:
     #   - failure ratio above the threshold.
     if (node.current_window_started_at is not None
             and node.recent_uptime_checks > 0):
-        observation_age = datetime.now() - node.current_window_started_at
+        observation_age = utcnow_naive() - node.current_window_started_at
         if observation_age >= timedelta(days=UPTIME_MIN_OBSERVATION_DAYS):
             ratio = (
                 (node.recent_failed_uptime_checks or 0)
@@ -513,10 +514,10 @@ def is_node_blacklisted(node:LightningNode)->Tuple[bool,str]:
     # check is ordered before audit because it's the stronger signal —
     # if both are active, the more accurate reason gets reported.
     if (node.force_close_blacklist_until is not None
-            and node.force_close_blacklist_until > datetime.now()):
+            and node.force_close_blacklist_until > utcnow_naive()):
         return True, 'FORCE_CLOSE_BLACKLISTED'
     if (node.audit_close_blacklist_until is not None
-            and node.audit_close_blacklist_until > datetime.now()):
+            and node.audit_close_blacklist_until > utcnow_naive()):
         return True, 'AUDIT_BLACKLISTED'
     if not node.ipv4_address:
         return True, 'NO_IPV4'
@@ -542,7 +543,7 @@ def is_node_blacklisted(node:LightningNode)->Tuple[bool,str]:
     oldest_known_date=node.get_oldest_known_date()
     if not oldest_known_date:
         return True, 'NO_OLDEST_KNOWN_DATE'
-    elapsed_time=datetime.now()-oldest_known_date
+    elapsed_time=utcnow_naive()-oldest_known_date
     elapsed_time_in_days=elapsed_time.days
     if elapsed_time_in_days<NODE_CRITERIA_MINIMUM_AGE:
         return True, 'NOT_OLD_ENOUGH'

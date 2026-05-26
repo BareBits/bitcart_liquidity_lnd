@@ -47,7 +47,7 @@ from classes import (
     StoreStats,
     BitcartInvoice,
 )
-from common_functions import sats_to_btc, btc_to_sats
+from common_functions import sats_to_btc, btc_to_sats, utcnow_naive
 import datetime, sys
 
 import logging
@@ -802,7 +802,13 @@ async def find_offline_channels(
             "list_channels", myxpub=wallet.get("xpub"),
         )
         channels = found_channels["result"]
-    now = datetime.datetime.now()
+    # UTC-naive: must match what audit_existing_peer reads (it compares
+    # last_seen_online / current_window_started_at against utcnow_naive()
+    # in node_database.py). lnd_graph_pull writes UTC-naive too. Mixing
+    # local-naive (`datetime.now()`) here would drift the staleness gate
+    # by the host's TZ offset and mis-classify peers near the LONG_OUTAGE
+    # threshold.
+    now = utcnow_naive()
     window = datetime.timedelta(days=UPTIME_ROLLING_WINDOW_DAYS)
     checked_peers = set()
     for channel in channels:
@@ -1179,12 +1185,52 @@ async def _get_lnd_connection(api: BitcartAPI, wallet_id: str) -> Dict[str, Any]
         return conn
 
 
+async def evict_lnd_connection(wallet_id: str) -> None:
+    """Drop a cached LND connection and close its gRPC channel.
+
+    Call this when an RPC fails with an auth/transport error that
+    indicates the cached credentials or channel are no longer valid
+    (StatusCode.UNAUTHENTICATED / PERMISSION_DENIED, UNAVAILABLE
+    after macaroon rotation, etc). The next _get_lnd_connection call
+    for this wallet_id will rebuild from a fresh api.get_lnd_info().
+
+    Idempotent — safe to call when the wallet isn't cached."""
+    conn = _LND_CONNECTIONS.pop(wallet_id, None)
+    if conn is None:
+        return
+    channel = conn.get("channel")
+    if channel is None:
+        return
+    try:
+        await channel.close()
+    except Exception:
+        # Best-effort cleanup; if close() throws (channel already
+        # closed, event-loop shutdown), we still want the cache
+        # eviction to stick.
+        logger.exception(
+            f"evict_lnd_connection: error closing channel for wallet {wallet_id}"
+        )
+
+
+async def close_all_lnd_connections() -> None:
+    """Close every cached LND gRPC channel and clear the cache.
+
+    Called from plugin.shutdown() so the next plugin reload starts
+    from a clean slate (otherwise gRPC channels leak across reloads,
+    eventually exhausting FDs). Also useful in standalone-mode
+    SIGTERM handlers."""
+    wallet_ids = list(_LND_CONNECTIONS.keys())
+    for wid in wallet_ids:
+        await evict_lnd_connection(wid)
+
+
 async def lnd_rpc(
     api: BitcartAPI,
     wallet_id: str,
     method: str,
     params: Optional[Dict[str, Any]] = None,
     service: str = "Lightning",
+    timeout: Optional[float] = 150.0,
 ) -> Union[Dict[str, Any], List[Dict[str, Any]]]:
     """Bare LND gRPC dispatcher — counterpart to electrum_rpc.
 
@@ -1228,7 +1274,15 @@ async def lnd_rpc(
     if params:
         _ParseDict(params, request, ignore_unknown_fields=False)
     rpc_callable = getattr(stub, method)
-    call = rpc_callable(request)
+    # timeout=None disables the gRPC deadline. Default 150s catches a
+    # wedged LND (deadlocked goroutine, backpressure, partition with
+    # TCP keepalives off) before it freezes the tick loop indefinitely.
+    # Callers can override (e.g., None for long-poll streams, or
+    # 30s for known-fast unary methods).
+    if timeout is not None:
+        call = rpc_callable(request, timeout=timeout)
+    else:
+        call = rpc_callable(request)
     if method_desc.server_streaming:
         return [
             _MessageToDict(msg, preserving_proto_field_name=True)
@@ -1313,7 +1367,10 @@ async def _lnd_pay_onchain(
         label=label or "",
     )
     try:
-        await stub.SendCoins(request)
+        # 150s timeout — guards against a wedged LND freezing the tick loop.
+        # SendCoins is normally fast (PSBT construction + broadcast) but can
+        # block during chain backfill / fee-estimator outages.
+        await stub.SendCoins(request, timeout=150.0)
     except _grpc.aio.AioRpcError as e:
         logger.warning(
             f"LND SendCoins to {dest_addr} for {amount_sat} sat failed: {e.details()}"
@@ -1380,7 +1437,10 @@ async def _lnd_pay_ln_invoice(
     conn = await _get_lnd_connection(api, wallet_id)
     stub = conn["stubs"]["Lightning"]
     request = _lightning_pb2.SendRequest(payment_request=invoice)
-    response = await stub.SendPaymentSync(request)
+    # 150s timeout — LN payments routinely take 30-90s on heavily-loaded
+    # paths; 150s is generous without leaving a stuck LND able to freeze
+    # the tick loop indefinitely.
+    response = await stub.SendPaymentSync(request, timeout=150.0)
     if response.payment_error:
         logger.warning(
             f"LND lnpay failed for {invoice[:30]}…: {response.payment_error}"
@@ -1457,7 +1517,9 @@ async def _lnd_keysend(
         dest_custom_records={_LN_KEYSEND_RECORD: preimage},
         outgoing_chan_id=int(outgoing_chan_id),
     )
-    response = await stub.SendPaymentSync(request)
+    # 150s timeout — matches _lnd_pay_ln_invoice; protects the tick loop
+    # against a wedged LND that never returns from SendPaymentSync.
+    response = await stub.SendPaymentSync(request, timeout=150.0)
     if response.payment_error:
         logger.warning(
             f"LND keysend to {dest_pubkey[:16]}… (chan {outgoing_chan_id}) "
@@ -1668,9 +1730,29 @@ async def new_calc_invoice_stats(
                     amount_in_sats = btc_to_sats(abs(float(payment["amount"])))
                     if amount_in_sats==0:
                         continue
+                    # Bitcart sends ISO timestamps with 'Z' suffix, so
+                    # dateutil returns a tz-AWARE datetime here. The
+                    # rest of the engine (find_offline_channels, the
+                    # SimpleDateTimeField API, FEE_START_DATE) uses
+                    # naive datetimes. Comparing aware-vs-naive raises
+                    # TypeError, which the broad `except` below would
+                    # silently swallow — and any caller that passes a
+                    # `since_date` would have ALL payments dropped
+                    # from revenue (silently zeroing dev-fee math).
+                    # Normalize both sides to naive UTC.
                     payment_date = dateutil.parser.parse(payment["created"])
-                    if since_date is not None and payment_date < since_date:
-                        continue
+                    if payment_date.tzinfo is not None:
+                        payment_date = payment_date.astimezone(
+                            datetime.timezone.utc
+                        ).replace(tzinfo=None)
+                    if since_date is not None:
+                        since_date_cmp = since_date
+                        if getattr(since_date_cmp, "tzinfo", None) is not None:
+                            since_date_cmp = since_date_cmp.astimezone(
+                                datetime.timezone.utc
+                            ).replace(tzinfo=None)
+                        if payment_date < since_date_cmp:
+                            continue
                     if payment["lightning"]:
                         store_stats.ln_total_revenue_in_sats += amount_in_sats
                     else:
@@ -1713,7 +1795,16 @@ async def new_calc_invoice_stats(
                     if not ineligible:
                         store_stats.revenue_eligible_for_fee += amount_in_sats
             except Exception as e:
-                logger.error(f"Error processing invoice in calc_fees: {e}:{invoice}")
+                # Broad catch is deliberate — we don't want one bad
+                # invoice to abort the whole per-tick stats build —
+                # but include the traceback so an operator can tell
+                # WHY an invoice was dropped from revenue (e.g.
+                # tz-aware/naive datetime comparison, missing field,
+                # type mismatch). Previously this swallowed silently.
+                logger.error(
+                    f"Error processing invoice in calc_fees: {e}:"
+                    f"{invoice} {traceback.format_exc()}"
+                )
 
         # Process data from wallet
         if wallet_id in reviewed_wallets:
@@ -1798,6 +1889,12 @@ async def new_calc_invoice_stats(
                     abs(float(transaction["fee_sat"]))
                 )
             elif is_ln_close_transaction(transaction):
+                # Parity with every other bucket branch: skip incoming
+                # txs so a peer-initiated close (where any reported
+                # fee_sat is paid by them, not us) doesn't inflate our
+                # close-fee total.
+                if transaction.get("incoming"):
+                    continue
                 store_stats.onchain_network_fees_paid_for_channel_closes_in_sats += abs(float(transaction['fee_sat']))
             elif transaction['incoming']==True:
                 continue
@@ -2804,7 +2901,7 @@ async def liquidity_check(
                     logger.error(
                         f"request_inbound_liquidity_from_lsp raised for "
                         f"wallet {best_wallet['id']}: {e} "
-                        f"{traceback.print_exc()}"
+                        f"{traceback.format_exc()}"
                     )
             else:
                 log_decision(
@@ -3927,7 +4024,7 @@ async def _do_keysend_cashouts_to_own_nodes(
         except Exception as e:
             logger.error(
                 f"_do_keysend_cashouts_to_own_nodes: keysend to "
-                f"{peer_pubkey[:16]}… raised: {e} {traceback.print_exc()}"
+                f"{peer_pubkey[:16]}… raised: {e} {traceback.format_exc()}"
             )
             ok = False
         # AMP fallback. Keysend requires --accept-keysend on the
@@ -3957,7 +4054,7 @@ async def _do_keysend_cashouts_to_own_nodes(
             except Exception as e:
                 logger.error(
                     f"_do_keysend_cashouts_to_own_nodes: AMP fallback to "
-                    f"{peer_pubkey[:16]}… raised: {e} {traceback.print_exc()}"
+                    f"{peer_pubkey[:16]}… raised: {e} {traceback.format_exc()}"
                 )
                 ok = False
         log_decision(
@@ -4137,7 +4234,7 @@ async def do_cashouts(api: BitcartAPI) -> Optional[bool]:
                 except Exception as e:
                     logger.error(
                         f"_do_keysend_cashouts_to_own_nodes raised for "
-                        f"wallet {wallet_id}: {e} {traceback.print_exc()}"
+                        f"wallet {wallet_id}: {e} {traceback.format_exc()}"
                     )
 
             # --- External LN-address invoice leg ---
@@ -4194,7 +4291,7 @@ async def do_cashouts(api: BitcartAPI) -> Optional[bool]:
                     external_ok = await do_ln_cashouts(api, wallet_id, available_ln)
                 except Exception as e:
                     logger.error(
-                        f'Exception in do_ln_cashouts: {e} {traceback.print_exc()}'
+                        f'Exception in do_ln_cashouts: {e} {traceback.format_exc()}'
                     )
                     external_ok = False
             elif own_channels:
@@ -4327,7 +4424,7 @@ async def _drain_ln_for_cashout_if_enabled(
     except Exception as e:
         logger.error(
             f"Exception in drain_ln_to_onchain wallet {wallet_id}: "
-            f"{e} {traceback.print_exc()}"
+            f"{e} {traceback.format_exc()}"
         )
 
 
@@ -4383,7 +4480,7 @@ async def _attempt_onchain_cashout(
     try:
         return await do_onchain_cashouts(api, wallet_id, available_onchain_sats)
     except Exception as e:
-        logger.error(f'Exception in do_onchain_cashouts: {e} {traceback.print_exc()}')
+        logger.error(f'Exception in do_onchain_cashouts: {e} {traceback.format_exc()}')
         return False
 
 
@@ -4510,7 +4607,7 @@ async def _attempt_ln_channel_open_for_cashout(
     except Exception as e:
         logger.error(
             f"Exception in direct-channel cashout attempt for wallet "
-            f"{wallet_id}: {e} {traceback.print_exc()}"
+            f"{wallet_id}: {e} {traceback.format_exc()}"
         )
         direct_ok = False
     if direct_ok:
@@ -4526,7 +4623,7 @@ async def _attempt_ln_channel_open_for_cashout(
     except Exception as e:
         logger.error(
             f"Exception in PREFER_LN_CASHOUT channel-open for wallet "
-            f"{wallet_id}: {e} {traceback.print_exc()}"
+            f"{wallet_id}: {e} {traceback.format_exc()}"
         )
         return False
 
@@ -5963,7 +6060,7 @@ async def refresh_lnd_node_database(api: "BitcartAPI") -> None:
     except Exception as e:
         logger.error(
             f"refresh_lnd_node_database: pull_and_upsert failed: {e} "
-            f"{traceback.print_exc()}"
+            f"{traceback.format_exc()}"
         )
 
 
@@ -6232,7 +6329,7 @@ async def process_pending_closes(api: "BitcartAPI") -> None:
             except Exception as e:
                 logger.error(
                     f"process_pending_closes: force_close failed "
-                    f"for {cp}: {e} {traceback.print_exc()}"
+                    f"for {cp}: {e} {traceback.format_exc()}"
                 )
                 close_result = None
             if close_result:
@@ -6284,7 +6381,7 @@ async def process_pending_closes(api: "BitcartAPI") -> None:
                         peer_row = LightningNode(node_address=peer_pubkey)
                         peer_row.save(force_insert=True)
                     peer_row.force_close_blacklist_until = (
-                        datetime.datetime.now()
+                        utcnow_naive()
                         + datetime.timedelta(
                             days=CHANNEL_FORCE_CLOSE_BLACKLIST_DAYS
                         )
@@ -6521,13 +6618,13 @@ async def audit_existing_channels(api: "BitcartAPI") -> None:
                 logger.error(
                     f"audit_existing_channels: cooperative close "
                     f"failed for {channel_point}: {e} "
-                    f"{traceback.print_exc()}"
+                    f"{traceback.format_exc()}"
                 )
                 close_result = None
             if close_result:
                 closes_today += 1
                 peer_node.audit_close_blacklist_until = (
-                    datetime.datetime.now()
+                    utcnow_naive()
                     + datetime.timedelta(days=CHANNEL_AUDIT_BLACKLIST_DAYS)
                 )
                 # Reset the streak; the blacklist field is now the
@@ -7339,6 +7436,52 @@ def _resolve_internal_api_url() -> str:
 _INTERNAL_API_URL = _resolve_internal_api_url()
 
 
+# Shared per-process BitcartAPI used by the tick loop. Rebuilt only when
+# the URL or AUTH_TOKEN changes — keeps a single httpx.AsyncClient (and
+# its TCP connection pool) alive across ticks instead of leaking three
+# fresh clients per tick (~2160/day at default cadence). The dashboard
+# route (`_get_dashboard_api`) deliberately still constructs its own
+# short-lived instance and closes it per-request; the leak the shared
+# instance fixes was tick-loop-specific.
+_SHARED_TICK_API: Optional["BitcartAPI"] = None
+
+
+async def _get_shared_tick_api(base_url: str, auth_token: Optional[str]) -> "BitcartAPI":
+    """Return the shared tick-loop BitcartAPI, rebuilding it if either
+    the URL or the auth_token has changed (e.g., first-run auth completed
+    and stored a token, or operator rotated AUTH_TOKEN in env). The old
+    instance is awaited-closed before being replaced so its connection
+    pool releases promptly."""
+    global _SHARED_TICK_API
+    if _SHARED_TICK_API is not None:
+        if _SHARED_TICK_API.base_url == base_url.rstrip('/') and _SHARED_TICK_API.auth_token == auth_token:
+            return _SHARED_TICK_API
+        # Token or URL changed — close the old client before replacing.
+        try:
+            await _SHARED_TICK_API.close()
+        except Exception:
+            logger.exception(
+                "_get_shared_tick_api: error closing previous BitcartAPI"
+            )
+        _SHARED_TICK_API = None
+    _SHARED_TICK_API = BitcartAPI(base_url, auth_token)
+    return _SHARED_TICK_API
+
+
+async def close_shared_tick_api() -> None:
+    """Close the shared tick BitcartAPI on plugin shutdown so the
+    httpx connection pool doesn't survive into the next process
+    reload. Idempotent."""
+    global _SHARED_TICK_API
+    if _SHARED_TICK_API is None:
+        return
+    try:
+        await _SHARED_TICK_API.close()
+    except Exception:
+        logger.exception("close_shared_tick_api: error closing BitcartAPI")
+    _SHARED_TICK_API = None
+
+
 async def _get_dashboard_api() -> "BitcartAPI":
     """Construct a `BitcartAPI` client for ad-hoc requests from plugin
     endpoints (currently: the dashboard router).
@@ -7373,24 +7516,32 @@ async def main():
     try:
         SimpleCacheField.delete_expired()
     except Exception as e:
-        logger.error(f'Error deleting expired cache entries {e} {traceback.print_exc()}')
+        logger.error(f'Error deleting expired cache entries {e} {traceback.format_exc()}')
     # init notifications
     try:
         if len(NOTIFICATION_PROVIDERS)==0:
             NOTIFICATION_PROVIDERS=await run_every_x_hours(my_func=setup_notifiers,hours=6)
     except Exception as e:
         logger.error(f'Not able to setup notifications, please see logs! {e}')
-    # init Bitcart API
+    # init Bitcart API.
+    #
+    # The shared tick API is rebuilt only when URL or token changes
+    # (see _get_shared_tick_api). The first call returns a no-token
+    # instance if AUTH_TOKEN is None; we then load the persisted token
+    # from SimpleVariable (or via setup_first_user) and re-request,
+    # which rebuilds the client with the new token in place. Previously
+    # this block constructed three throwaway BitcartAPI instances per
+    # tick, all of which leaked their httpx connection pools.
     try:
         logger.info("Initializing bitcart API....")
-        api = BitcartAPI(BITCART_URL, AUTH_TOKEN)
+        api = await _get_shared_tick_api(BITCART_URL, AUTH_TOKEN)
         if not AUTH_TOKEN:
             token_object=SimpleVariable.get_or_none(
                 SimpleVariable.name == "BITCARTAPITOKEN"
             )
             if token_object:
                 AUTH_TOKEN = token_object.value
-        api = BitcartAPI(BITCART_URL, AUTH_TOKEN)
+        api = await _get_shared_tick_api(BITCART_URL, AUTH_TOKEN)
         if not AUTH_TOKEN:
             logger.info(
                 "🔎 Detected first run, attempting to create account for Bitcart API.."
@@ -7408,8 +7559,9 @@ async def main():
                 )
                 await asyncio.sleep(30)
                 return
-        # Check authentication
-        api = BitcartAPI(BITCART_URL, AUTH_TOKEN)
+        # Check authentication — rebuild iff the token changed via
+        # setup_first_user above.
+        api = await _get_shared_tick_api(BITCART_URL, AUTH_TOKEN)
         auth_result = await api.is_authenticated()
         if not auth_result:
             logger.error(
@@ -7419,7 +7571,7 @@ async def main():
             return
     except Exception as e:
         logger.error(
-            f"⚠️ Bitcart api auth error {e}, sleeping... {traceback.print_exc()}"
+            f"⚠️ Bitcart api auth error {e}, sleeping... {traceback.format_exc()}"
         )
         await asyncio.sleep(60)
         return
@@ -7428,8 +7580,7 @@ async def main():
     try:
         first_wallet_response = await first_wallet_check_create(api)
     except Exception as e:
-        logger.error(f"Error in wallet creation stage1 {e} {traceback.print_exc()}")
-        traceback.print_exc()
+        logger.error(f"Error in wallet creation stage1 {e} {traceback.format_exc()}")
         await asyncio.sleep(60)
         return
     if not first_wallet_response:
@@ -7442,8 +7593,7 @@ async def main():
     try:
         wallet_creation_response = await wallet_creation(api)
     except Exception as e:
-        logger.error(f"Error in wallet creation stage {e} {traceback.print_exc()}")
-        traceback.print_exc()
+        logger.error(f"Error in wallet creation stage {e} {traceback.format_exc()}")
         await asyncio.sleep(60)
         return
     if not wallet_creation_response:
@@ -7478,7 +7628,7 @@ async def main():
     except Exception as e:
         logger.error(
             f"Error in ensure_lnd_wallets_peered_with_lsps: {e} "
-            f"{traceback.print_exc()}"
+            f"{traceback.format_exc()}"
         )
     # Daily pre-flight: log which LSPs serve which wallets' networks
     # so an operator can spot misconfiguration (e.g. testnet wallet
@@ -7492,7 +7642,7 @@ async def main():
     except Exception as e:
         logger.error(
             f"Error in audit_lsp_network_compatibility: {e} "
-            f"{traceback.print_exc()}"
+            f"{traceback.format_exc()}"
         )
     # Refresh the LightningNode candidate DB from LND gossip once per
     # day. LN gossip is identical across well-synced LND nodes, so we
@@ -7505,7 +7655,7 @@ async def main():
     except Exception as e:
         logger.error(
             f"Error in refresh_lnd_node_database: {e} "
-            f"{traceback.print_exc()}"
+            f"{traceback.format_exc()}"
         )
     # Daily audit of every open channel against the degradation
     # criteria (HIGH_FEE_RATE / LOW_EFFECTIVE_DEGREE / LOW_TWO_HOP_REACH
@@ -7519,7 +7669,7 @@ async def main():
     except Exception as e:
         logger.error(
             f"Error in audit_existing_channels: {e} "
-            f"{traceback.print_exc()}"
+            f"{traceback.format_exc()}"
         )
     # Health audit (config sanity + LN-cashout staleness). Cheap —
     # mostly config reads plus one channel-balance pass for the LN
@@ -7531,7 +7681,7 @@ async def main():
     except Exception as e:
         logger.error(
             f"Error in collect_health_warnings: {e} "
-            f"{traceback.print_exc()}"
+            f"{traceback.format_exc()}"
         )
     # Hourly retry of stuck coop closes. LND doesn't auto-retry a coop
     # close request the peer didn't respond to; we re-issue once an
@@ -7546,13 +7696,13 @@ async def main():
     except Exception as e:
         logger.error(
             f"Error in process_pending_closes: {e} "
-            f"{traceback.print_exc()}"
+            f"{traceback.format_exc()}"
         )
     # update closed channel stats
     try:
         channel_closings_result=await update_channel_closings(api)
     except Exception as e:
-        logger.error(f'Error in updating channel closings: {e}:{traceback.print_exc()}')
+        logger.error(f'Error in updating channel closings: {e}:{traceback.format_exc()}')
     # add more liquidity as needed
     try:
         if DEBUG_STEPS:
@@ -7560,7 +7710,7 @@ async def main():
         liquidity_check_response = await liquidity_check(api)
     except Exception as e:
         logger.error(
-            f"Error in checking available inbound liquidity: {e}:{traceback.print_exc()}"
+            f"Error in checking available inbound liquidity: {e}:{traceback.format_exc()}"
         )
     # calculate onchain -> LN moves
     # this is only done if liquidity/reserves are sufficient
@@ -7569,7 +7719,7 @@ async def main():
             breakpoint()
         onchain_to_ln_result = await run_every_x_seconds(my_func=decide_onchain_to_ln, seconds=90, api=api)
     except Exception as e:
-        logger.error(f'Error calling onchain_to_ln_result: {e}:{traceback.print_exc()}')
+        logger.error(f'Error calling onchain_to_ln_result: {e}:{traceback.format_exc()}')
     # Calculate and send fees, this check is heavy and shouldn't be run more than once per day
     fee_response = None
     try:
@@ -7580,7 +7730,7 @@ async def main():
         else:
             fee_response= await run_every_x_days(my_func=calculate_fees,days=1, api=api)
     except Exception as e:
-        logger.error(f"Error in calculating fees: {e} {traceback.print_exc()}")
+        logger.error(f"Error in calculating fees: {e} {traceback.format_exc()}")
 
     # Detection pass: walk LND wallets and surface channels whose
     # local balance exceeds LOOP_OUT_TRIGGER_LOCAL_BALANCE_SAT.
@@ -7614,7 +7764,7 @@ async def main():
                 cand.get("remote_pubkey"),
             )
     except Exception as e:
-        logger.error(f"Error in loop-out candidate scan: {e} {traceback.print_exc()}")
+        logger.error(f"Error in loop-out candidate scan: {e} {traceback.format_exc()}")
 
     # Purge swap-quote history older than 6 months. Cheap, so daily is fine.
     try:
@@ -7633,7 +7783,7 @@ async def main():
             breakpoint()
         cashout_response = await do_cashouts(api)
     except Exception as e:
-        logger.error(f"Error in calculating cashouts: {e} {traceback.print_exc()}")
+        logger.error(f"Error in calculating cashouts: {e} {traceback.format_exc()}")
     if not cashout_response:
         logger.error(f"2Error in calculating cashouts")
 
