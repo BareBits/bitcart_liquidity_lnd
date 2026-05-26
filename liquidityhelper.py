@@ -49,6 +49,7 @@ from classes import (
 )
 from common_functions import sats_to_btc, btc_to_sats, utcnow_naive
 import datetime, sys
+from decimal import Decimal, InvalidOperation
 
 import logging
 from logging.handlers import RotatingFileHandler
@@ -658,6 +659,61 @@ async def _lnd_list_onchain_history(api: "BitcartAPI", wallet_id: str) -> List[D
     return out
 
 
+def _normalize_electrum_onchain_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    """Reshape one Electrum `onchain_history` row to match the keys that
+    _lnd_list_onchain_history emits.
+
+    Electrum's daemon returns rows like:
+      {txid, fee_sat, height, confirmations, timestamp, monotonic_timestamp,
+       incoming, bc_value, bc_balance, date, label, txpos_in_block}
+    where `bc_value` is a FORMATTED BTC-DECIMAL STRING ("0.00500000", "2.",
+    "-0.05000000") produced by electrum.util.format_satoshis on a Satoshis
+    object — NOT an integer sat count. Consumers (new_calc_invoice_stats,
+    dashboard._gather_payment_rows) expect `amount_sat` as an int, which
+    is what the LND branch already produces. Without this normalization,
+    `tx.get("amount_sat") or 0` silently returns 0 for every Electrum row,
+    which historically inflated nothing (fees were just dropped) and zeroed
+    the dashboard's Recent Cashouts amount column.
+
+    bc_value carries a sign — negative for outgoing, positive for incoming —
+    so we let the Decimal parse preserve it and the consumer's abs() does
+    the right thing whichever direction the tx is.
+    """
+    txid = (row.get("txid") or row.get("tx_hash") or "").lower()
+    # bc_value parsing. Trailing-period quirks like "2." parse fine via
+    # Decimal; missing/None defaults to 0. Multiplying by 100_000_000 in
+    # Decimal avoids float-precision drift on sub-sat msat residues.
+    bc_value = row.get("bc_value")
+    if bc_value in (None, ""):
+        amount_sat = 0
+    else:
+        try:
+            amount_sat = int(Decimal(str(bc_value)) * 100_000_000)
+        except (InvalidOperation, ValueError, TypeError):
+            amount_sat = 0
+    # Electrum natively reports `incoming` as a bool — use it verbatim
+    # so a tx with bc_value=0 but a positive net effect (rare; would be
+    # a same-wallet shuffle with all-zero net delta) still classifies
+    # consistently with what Electrum thinks.
+    incoming = bool(row.get("incoming"))
+    fee_sat_raw = row.get("fee_sat")
+    fee_sat = int(fee_sat_raw) if isinstance(fee_sat_raw, (int, float)) else 0
+    return {
+        "txid": txid,
+        "incoming": incoming,
+        "fee_sat": fee_sat,
+        "label": row.get("label") or "",
+        "amount_sat": amount_sat,
+        "block_height": int(row.get("height") or 0),
+        "num_confirmations": int(row.get("confirmations") or 0),
+        "timestamp": int(row.get("timestamp") or 0),
+        # Electrum doesn't expose dest_addresses on this endpoint; fee
+        # bucketing doesn't read it for Electrum rows anyway. Empty
+        # string matches the LND branch's "no dest known" fallback.
+        "dest_address": "",
+    }
+
+
 async def list_onchain_history(
     *,
     wallet: Dict[str, Any],
@@ -666,7 +722,14 @@ async def list_onchain_history(
     """Wallet-aware on-chain history. Dispatcher counterpart to
     `electrum_rpc("onchain_history", ...)` that knows how to ask LND wallets
     via `Lightning.GetTransactions` and inject OPEN CHANNEL / CLOSE CHANNEL
-    labels by tx_hash matching."""
+    labels by tx_hash matching.
+
+    Both branches return the same row shape: txid, incoming, fee_sat,
+    label, amount_sat, block_height, num_confirmations, timestamp,
+    dest_address. The Electrum branch normalizes Electrum's native
+    `bc_value` (a formatted BTC-decimal string) into an integer
+    `amount_sat` so consumers can do unit-correct math without each
+    one re-parsing the string."""
     if wallet.get("currency") == "btclnd":
         if api is None and wallet["id"] not in _LND_CONNECTIONS:
             raise ValueError(
@@ -680,8 +743,12 @@ async def list_onchain_history(
     # {"summary": {...}, "transactions": [...]}. Some Bitcart server flavors
     # unwrap that to a bare list before returning. Accept both shapes.
     if isinstance(result, dict):
-        return result.get("transactions") or []
-    return result or []
+        raw_rows = result.get("transactions") or []
+    elif isinstance(result, list):
+        raw_rows = result
+    else:
+        raw_rows = []
+    return [_normalize_electrum_onchain_row(r) for r in raw_rows]
 
 
 async def _lnd_list_ln_payments(api: "BitcartAPI", wallet_id: str) -> List[Dict[str, Any]]:
@@ -2267,16 +2334,60 @@ async def our_wallet_exists(api: BitcartAPI, store: dict) -> Optional[dict]:
         return found_wallet
 
 
+async def _detect_preferred_wallet_currency(api: BitcartAPI) -> str:
+    """Pick the best Bitcart wallet flavor to create on this deployment.
+
+    Preference order:
+      1. `btclnd` — Bitcart was built with the LND daemon container.
+         LND wallets give us the full LND gRPC surface (PendingChannels,
+         ClosedChannels, LabelTransaction, BuildRoute, etc.) that the
+         engine uses for direct-channel cashouts, AMP fallback,
+         force-close handling, and richer accounting.
+      2. `btc` — bare Electrum (no LND container shipped). Engine still
+         works but feature surface is reduced (no native channel-label
+         attribution, no force-close coop-then-escalate, etc.).
+
+    Detection: query Bitcart's `/cryptos` endpoint. On any failure
+    (network, auth, unexpected response shape) fall back to `btc`
+    so a fresh install on an off-spec server doesn't hang on
+    auto-creation.
+    """
+    supported = await api.get_supported_currencies()
+    if supported is None:
+        logger.warning(
+            "Couldn't determine Bitcart's supported currencies "
+            "(api.get_supported_currencies returned None). "
+            "Defaulting to Electrum (currency='btc') for wallet creation."
+        )
+        return 'btc'
+    if 'btclnd' in supported:
+        logger.info(
+            "Bitcart supports LND wallets — creating wallet with currency='btclnd'."
+        )
+        return 'btclnd'
+    logger.info(
+        "Bitcart does not advertise btclnd support; falling back to "
+        "Electrum (currency='btc'). Supported codes: %s",
+        sorted(supported),
+    )
+    return 'btc'
+
+
 async def first_wallet_check_create(api: BitcartAPI) -> bool:
     """
-    Check for first wallet, create it if it doesn't exist. Return True if went well, None if error
+    Check for first wallet, create it if it doesn't exist. Return True if went well, None if error.
+
+    Wallet flavor is auto-detected via _detect_preferred_wallet_currency
+    (prefers `btclnd` when available; falls back to Electrum `btc`).
+    Previously hardcoded `btc`, which broke LND-only deployments.
     """
     wallet_list = await api.get_wallets()
     if wallet_list:
         if len(wallet_list) > 0:
             return True
     logger.info("No wallets found, creating first wallet..")
-    mywallet_seed_response = await api.create_wallet_seed()
+    currency = await _detect_preferred_wallet_currency(api)
+    mywallet_seed_response = await api.create_wallet_seed(currency=currency)
     if not isinstance(mywallet_seed_response, dict):
         logger.error(f"Err making wallet seed response: {mywallet_seed_response}")
         return False
@@ -2296,7 +2407,7 @@ async def first_wallet_check_create(api: BitcartAPI) -> bool:
     else:
         logger.error("Err generating wallet seed, will try again later")
         return False
-    mywallet = await api.create_wallet(seed=mywallet_seed)
+    mywallet = await api.create_wallet(seed=mywallet_seed, currency=currency)
     if not mywallet:
         logger.error("Err generating wallet, will try again later")
         return False
@@ -2505,7 +2616,14 @@ async def _lnd_close_channel(
 async def wallet_creation(
     api: BitcartAPI,
 ) -> Optional[bool]:
+    """Create a per-store liquidityhelper wallet for each store that
+    doesn't already have one. Currency flavor is auto-detected via
+    _detect_preferred_wallet_currency (prefers `btclnd` when Bitcart
+    supports it; falls back to Electrum `btc` otherwise)."""
     store_list=await api.get_stores()
+    # Detect once up front rather than on every iteration — supported
+    # currencies don't change mid-tick.
+    currency = await _detect_preferred_wallet_currency(api)
     for store in store_list:
         store_id = store["id"]
         mywallet = None
@@ -2516,9 +2634,9 @@ async def wallet_creation(
             continue
 
         logger.info(
-            f"No liquidity helper wallet found for store : {store['name']}, creating.."
+            f"No liquidity helper wallet found for store : {store['name']}, creating (currency={currency}).."
         )
-        mywallet_seed_response = await api.create_wallet_seed()
+        mywallet_seed_response = await api.create_wallet_seed(currency=currency)
         if not isinstance(mywallet_seed_response, dict):
             logger.error(
                 f"Err making wallet seed response: {mywallet_seed_response}"
@@ -2542,7 +2660,7 @@ async def wallet_creation(
         else:
             logger.error("Err generating wallet seed, will try again later")
             continue
-        mywallet = await api.create_wallet(seed=mywallet_seed)
+        mywallet = await api.create_wallet(seed=mywallet_seed, currency=currency)
         if not mywallet:
             logger.error("Err generating wallet, will try again later")
             continue
@@ -2774,23 +2892,54 @@ async def update_channel_closings(api:BitcartAPI) -> None:
 async def get_most_recent_channel_close(api:BitcartAPI,wallet_id:str)->Optional[datetime.datetime]:
     """
     Returns the most recent channel closing attempt date.
-    This is the date of the first attempt to close said channel, subsequent dates are not tracked
+    This is the date of the first attempt to close said channel, subsequent dates are not tracked.
+
+    Channel-state vocabulary spans both Electrum and LND:
+      - Electrum: OPEN, OPENING, FUNDED, CLOSING, FORCE_CLOSING, CLOSED, REDEEMED
+      - LND-via-Bitcart-proxy: OPEN, PENDING_OPEN, PENDING_CLOSE,
+        PENDING_FORCE_CLOSE, WAITING_CLOSE, FORCE_CLOSING, CLOSED
+    We treat any "still settling" state as a candidate for a recent
+    close attempt.
     """
-    channels=await api.get_wallet_ln_channels(wallet_id)
-    found_closes=[]
+    # State names that mean "the channel is currently closing (coop or
+    # force) and may have an associated LightningChannel row recording
+    # the operator's coop-close-requested timestamp". Anything else is
+    # either fully open, fully settled, or pre-open and not interesting
+    # to this lookup.
+    _CLOSING_STATES = {
+        # Electrum
+        'CLOSING', 'FORCE_CLOSING',
+        # LND
+        'PENDING_CLOSE', 'PENDING_FORCE_CLOSE', 'WAITING_CLOSE',
+    }
+    _SETTLED_OR_OPEN_STATES = {
+        'OPEN', 'REDEEMED', 'CLOSED',
+        # LND additions
+        'OPENING', 'PENDING_OPEN', 'FUNDED',
+    }
+    channels = await api.get_wallet_ln_channels(wallet_id) or []
+    found_closes = []
     for channel in channels:
-        state=channel['state']
-        if state in ['OPEN','REDEEMED','CLOSED']:
+        state = channel.get('state')
+        if state in _SETTLED_OR_OPEN_STATES:
             continue
-        elif state in ['CLOSING']:
-            channel_point=channel['channel_point']
-            channel_object=LightningChannel.get_or_none(LightningChannel.channel_point==channel_point)
-            if channel_object:
-                if channel_object.cooperative_close_requested:
-                    found_closes.append(found_closes)
+        if state in _CLOSING_STATES:
+            channel_point = channel.get('channel_point')
+            if not channel_point:
+                continue
+            channel_object = LightningChannel.get_or_none(
+                LightningChannel.channel_point == channel_point
+            )
+            if channel_object and channel_object.cooperative_close_requested:
+                # Previously this appended `found_closes` (the list)
+                # to itself — `max([list, list, ...])` raises TypeError.
+                # Append the actual close-request timestamp.
+                found_closes.append(channel_object.cooperative_close_requested)
         else:
-            logger.warning(f'In get_most_recent_channel_close, found unknown state {state}')
-    if len(found_closes)>0:
+            logger.warning(
+                f'In get_most_recent_channel_close, found unknown state {state}'
+            )
+    if found_closes:
         return max(found_closes)
     return None
 
@@ -4208,14 +4357,28 @@ async def do_cashouts(api: BitcartAPI) -> Optional[bool]:
             # get keysent back to the peer directly (zero LN routing
             # fees); external channels get the existing LN-address
             # invoice cashout with LSP-shortfall holdback applied.
+            #
+            # OWN-node keysend is LND-only — _do_keysend_cashouts_to_own_
+            # nodes (and the _lnd_keysend / _lnd_amp_send helpers below
+            # it) read LND-native channel fields (chan_id, commit_fee,
+            # commitment_type) and dial Lightning.SendPaymentSync /
+            # Router.SendPaymentV2 via _get_lnd_connection. For Electrum
+            # wallets the helper would either KeyError on missing fields
+            # or RuntimeError when api.get_lnd_info() returns 400. Treat
+            # all channels as "external" for Electrum so they go down
+            # the LN-address invoice path that _is_ wallet-agnostic.
             own_pubkeys = own_node_pubkeys()
             all_channels = await api.get_wallet_ln_channels(
                 wallet_id, active_only=True, online_only=True,
             )
+            wallet_is_lnd = best_wallet.get("currency") == "btclnd"
             own_channels: List[Dict[str, Any]] = []
             external_channels: List[Dict[str, Any]] = []
             for ch in (all_channels or []):
-                if (ch.get("remote_pubkey") or "").lower() in own_pubkeys:
+                if (
+                    wallet_is_lnd
+                    and (ch.get("remote_pubkey") or "").lower() in own_pubkeys
+                ):
                     own_channels.append(ch)
                 else:
                     external_channels.append(ch)
@@ -4226,7 +4389,7 @@ async def do_cashouts(api: BitcartAPI) -> Optional[bool]:
             # operator's other node), so holding them back wouldn't
             # change reserve availability.
             own_ok = False
-            if own_channels:
+            if own_channels and wallet_is_lnd:
                 try:
                     own_ok = await _do_keysend_cashouts_to_own_nodes(
                         api, wallet_id, own_channels,
@@ -4236,6 +4399,17 @@ async def do_cashouts(api: BitcartAPI) -> Optional[bool]:
                         f"_do_keysend_cashouts_to_own_nodes raised for "
                         f"wallet {wallet_id}: {e} {traceback.format_exc()}"
                     )
+            elif own_channels and not wallet_is_lnd:
+                # Defensive: own_channels is only populated when wallet_is_lnd,
+                # so this branch is unreachable. Documenting the invariant
+                # in case the classification loop is later refactored.
+                log_decision(
+                    ("own_keysend_skip_non_lnd", wallet_id), True,
+                    "OWN-node keysend is LND-only; wallet %s is currency=%s, "
+                    "skipping. (All channels treated as external; LN-address "
+                    "invoice path runs unchanged.)",
+                    wallet_id, best_wallet.get("currency"),
+                )
 
             # --- External LN-address invoice leg ---
             available_ln = sum(

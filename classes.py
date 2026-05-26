@@ -406,23 +406,37 @@ class BitcartAPI:
         return headers
     async def get_outbound_liquidity(self, wallet_id:str) -> Optional[float]:
         """
-        Get outbound liquidity in sats for a given wallet
+        Get outbound liquidity in sats for a given wallet.
 
-        Args:
+        Iterates the wallet's channels and sums local_balance on
+        channels in OPEN state. Skips Electrum BACKUP rows entirely
+        (they appear when a wallet is restored from seed before full
+        channel-state recovery; they have a `state` field but lack
+        local_balance / peer_state / remote_pubkey, so a naive read
+        used to KeyError into the outer except and return None —
+        which made callers' int(None) raise TypeError and silently
+        skip fee/referral payments).
 
         Returns:
-            Sats or None if errored
+            Sats or None if errored.
         """
         try:
             total_outbound=0
             current_channels=await self.get_wallet_ln_channels(wallet_id)
-            for channel in current_channels:
-                if channel['state']!='OPEN':
+            for channel in (current_channels or []):
+                # BACKUP rows come from electrum.commands.list_channels:
+                # they have only {type, short_channel_id, channel_id,
+                # channel_point, state} — no balances. Skip rather than
+                # KeyError. The active 'CHANNEL'-type and LND-shaped
+                # channels still flow through normally.
+                if channel.get('type') == 'BACKUP':
                     continue
-                total_outbound+=channel['local_balance']
+                if channel.get('state') != 'OPEN':
+                    continue
+                total_outbound += int(channel.get('local_balance') or 0)
             return total_outbound
         except Exception as e:
-            logger.error(f"Error retrieving store by id: {e}")
+            logger.error(f"Error retrieving outbound liquidity for wallet {wallet_id}: {e} {traceback.format_exc()}")
             return None
     async def get_store_inbound_liquidity(self, store_id:str) -> Optional[int]:
         """
@@ -465,11 +479,19 @@ class BitcartAPI:
             best_wallet=await self.get_best_ln_wallet_for_store(full_store)
             current_channels=await self.get_wallet_ln_channels(best_wallet['id'])
             for channel in current_channels:
-                if channel['state']!='OPEN':
+                # Electrum BACKUP rows lack peer_state and remote_balance;
+                # skip them rather than KeyError-ing into the outer except.
+                if channel.get('type') == 'BACKUP':
                     continue
-                if channel['peer_state']!='GOOD':
+                if channel.get('state') != 'OPEN':
                     continue
-                total += float(channel['remote_balance'])
+                # peer_state vocabulary: Electrum uses 'GOOD' for healthy,
+                # LND-via-Bitcart-proxy uses 'OPEN' (bitcart_fork's btclnd
+                # daemon emits OPEN when ch.active else DISCONNECTED).
+                # Accept either so LND wallets aren't silently zeroed.
+                if channel.get('peer_state') not in self._ONLINE_PEER_STATES:
+                    continue
+                total += float(channel.get('remote_balance') or 0)
             return total
         except Exception as e:
             logger.error(f"Error retrieving store total liq: {e} {traceback.format_exc()}")
@@ -692,7 +714,18 @@ class BitcartAPI:
         'WAITING_CLOSE',
     }
     _ONLINE_PEER_STATES = {
+        # Electrum-style:
         'GOOD', 'CONNECTED', 'ACTIVE', 'ONLINE',
+        # LND-via-bitcart-proxy reports an active channel's peer_state as
+        # "OPEN" (bitcart_fork/daemons/btclnd.py emits OPEN if ch.active
+        # else DISCONNECTED). Without this entry, online_only=True filters
+        # drop EVERY active LND channel; cascading effect: store_needs_
+        # liquidity falsely reports zero healthy channels → spurious LSP
+        # orders. (The dashboard's _get_inbound_liquidity bypasses the
+        # proxy with a direct lnd_rpc call because of exactly this bug;
+        # adding OPEN here keeps the proxy path correct too so we don't
+        # need bypasses everywhere.)
+        'OPEN',
     }
 
     async def get_wallet_ln_channels(self, walletid:str,active_only:bool=False,online_only:bool=False) -> Optional[List[Dict]]:
@@ -985,18 +1018,22 @@ class BitcartAPI:
         except Exception as e:
             logger.error(f"1Error creating channel: {e}")
             return None
-    async def create_wallet_seed(self,) -> Optional[Dict]:
+    async def create_wallet_seed(self, currency: str = 'btc') -> Optional[Dict]:
         """
-        Create a new wallet.
+        Generate a new wallet seed phrase for the given currency.
 
         Args:
+            currency: Bitcart crypto code. Defaults to 'btc' (Electrum) for
+                back-compat. Pass 'btclnd' on deployments where Bitcart was
+                built with the LND container so the daemon returns an
+                LND-compatible seed.
 
         Returns:
-            Created wallet or None if error occurred
+            Created wallet seed dict or None if error occurred
         """
         try:
             post_data = {
-                "currency": 'btc',
+                "currency": currency,
                 "hot_wallet": True,
             }
 
@@ -1059,11 +1096,15 @@ class BitcartAPI:
         except Exception as e:
             logger.error(f'Error in is_channel_open_pending: {e}')
             return True
-    async def create_wallet(self,seed:str) -> Optional[Dict]:
+    async def create_wallet(self, seed: str, currency: str = 'btc') -> Optional[Dict]:
         """
-        Create a new wallet with a given seed
+        Create a new wallet with a given seed.
 
         Args:
+            seed: seed phrase / xpub for the wallet.
+            currency: Bitcart crypto code. Defaults to 'btc' (Electrum) for
+                back-compat. Pass 'btclnd' on LND-capable deployments — the
+                Bitcart server will then provision an LND-backed wallet.
 
         Returns:
             Created wallet or None if error occurred
@@ -1073,7 +1114,7 @@ class BitcartAPI:
                 "name": 'liquidityhelper',
                 "xpub": seed,
                 "lightning_enabled":True,
-                'currency':'btc'
+                'currency': currency,
             }
 
             response = await self.client.post(
@@ -1250,6 +1291,48 @@ class BitcartAPI:
             return None
         except Exception as e:
             logger.warning(f"failed to fetch BTC/USD rate from Bitcart: {e}")
+            return None
+
+    async def get_supported_currencies(self) -> Optional[Set[str]]:
+        """Return the set of crypto-currency codes the Bitcart server
+        supports (e.g. {"btc", "btclnd", "btccln", "eth", ...}).
+
+        Used by wallet-creation flows to pick the best wallet flavor
+        for this deployment — prefer `btclnd` when available (richer
+        Lightning feature set than the bare Electrum daemon), fall
+        back to `btc` (Electrum) when Bitcart wasn't built with the
+        LND daemon container.
+
+        Returns None on transport failure (so callers can distinguish
+        "couldn't determine" from "supports nothing"); an empty set
+        is conceivable but unlikely in practice.
+
+        Bitcart's `/cryptos` endpoint returns a paginated list:
+          {"result": [...codes...], "next": ..., "count": N}
+        For most deployments the list is short enough that a single
+        page suffices, but we use the existing _query paginator for
+        forward-compat with installs that wire many altcoins.
+        """
+        try:
+            response, items = await self._query(
+                f"{self.base_url}/cryptos", limit=200,
+            )
+            if response is None:
+                return None
+            codes: Set[str] = set()
+            for item in items or []:
+                # `/cryptos` historically returns either a list of
+                # bare code strings ["btc", "btclnd", ...] or a list
+                # of dicts [{"code": "btc", ...}, ...]. Accept both.
+                if isinstance(item, str):
+                    codes.add(item.lower())
+                elif isinstance(item, dict):
+                    code = item.get("code") or item.get("name")
+                    if isinstance(code, str):
+                        codes.add(code.lower())
+            return codes
+        except Exception as e:
+            logger.warning(f"failed to fetch supported currencies: {e}")
             return None
 
     async def close(self):
