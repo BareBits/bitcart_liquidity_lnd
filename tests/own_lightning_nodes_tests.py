@@ -236,6 +236,28 @@ def test_own_lightning_nodes_full_roundtrip(
     chan_id_str = channel.get("chan_id") or ""
     chan_id_int = int(chan_id_str) if chan_id_str else 0
 
+    # Wait for clientnode (B) to also see the channel as active with the
+    # same SCID before initiating the keysend FROM B. _find_a_to_b_channel
+    # only polled A's view; if we keysend before B has finished processing
+    # the channel-open on its own side, LND surfaces it as
+    # "insufficient_balance" (LND's error when it can't construct a route
+    # from the specified outgoing channel, even though usable balance is
+    # actually there).
+    async def _wait_for_clientnode_channel():
+        deadline = asyncio.get_event_loop().time() + 30.0
+        while asyncio.get_event_loop().time() < deadline:
+            for ch in await clientnode.list_channels():
+                if (ch.get("remote_pubkey", "").lower() == bitcart_lnd.identity_pubkey.lower()
+                        and ch.get("active")
+                        and (ch.get("chan_id") or "") == chan_id_str):
+                    return ch
+            await asyncio.sleep(0.5)
+        raise AssertionError(
+            "clientnode never saw the channel as active with matching SCID"
+        )
+
+    event_loop.run_until_complete(_wait_for_clientnode_channel())
+
     event_loop.run_until_complete(
         _send_keysend(
             from_node=clientnode,
