@@ -398,6 +398,12 @@ class LndNode:
             "--tlsextradomain=localhost",
             "--nobootstrap",
             "--protocol.wumbo-channels",
+            # LND rejects keysend payments with "incorrect_payment_details"
+            # unless this is set. The OWN_LIGHTNING_NODES integration tests
+            # exercise the production keysend path (A->B cashout); the
+            # destination LND needs to accept keysends or every keysend
+            # cashout fails at the receiver, not the sender.
+            "--accept-keysend",
             # The fixture opens A->B and B->A back-to-back. LND's default of
             # 1 pending channel per peer would reject the second open.
             "--maxpendingchannels=5",

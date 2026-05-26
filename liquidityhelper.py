@@ -3718,10 +3718,27 @@ async def _do_keysend_cashouts_to_own_nodes(
             continue
         local_balance = int(ch.get("local_balance") or 0)
         # local_chan_reserve_sat is per-channel, set by the protocol /
-        # peer policy at open time. Subtract it (and a small commit-fee
-        # cushion) to get what's actually payable.
+        # peer policy at open time. The full deduction stack:
+        #   - reserve: protocol-enforced floor
+        #   - commit_fee: the funder's per-commit-tx fee (reported by LND
+        #     for each channel; non-funder side has commit_fee == 0)
+        #   - anchor overhead for ANCHORS commitment type: ~660 sat for
+        #     the two anchor outputs + headroom for fee-bump room. LND's
+        #     pathfinder enforces this internally and rejects with
+        #     "insufficient_balance" when violated, even though
+        #     list_channels still reports the gross local_balance.
+        #   - 100 sat safety margin
+        # The old version subtracted only reserve + 100, which worked
+        # for legacy non-anchor channels but failed with
+        # "insufficient_balance" on anchor channels (LND's default for
+        # new channels).
         reserve = int(ch.get("local_chan_reserve_sat") or 0)
-        payable = max(0, local_balance - reserve - 100)
+        commit_fee = int(ch.get("commit_fee") or 0)
+        commitment_type = (ch.get("commitment_type") or "").upper()
+        anchor_overhead = 2000 if "ANCHOR" in commitment_type else 0
+        payable = max(
+            0, local_balance - reserve - commit_fee - anchor_overhead - 100,
+        )
         if payable < MIN_LN_CASHOUT_IN_SATS:
             log_decision(
                 ("own_keysend_below_min", wallet_id, peer_pubkey),
