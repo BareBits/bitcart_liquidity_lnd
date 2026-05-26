@@ -1458,6 +1458,95 @@ async def _lnd_keysend(
     return True
 
 
+async def _lnd_amp_send(
+    api: "BitcartAPI",
+    wallet_id: str,
+    dest_pubkey: str,
+    amount_sat: int,
+    outgoing_chan_id: int,
+    label: str,
+) -> bool:
+    """Spontaneous AMP payment to a directly-connected LN node.
+
+    Used as a fallback when _lnd_keysend gets rejected — keysend
+    requires --accept-keysend on the recipient (LND default: OFF),
+    while AMP requires --accept-amp (default: ON in recent LND).
+    For an operator whose own-node config is whatever
+    Voltage/Umbrel/Start9/etc shipped, AMP usually works where
+    keysend doesn't.
+
+    Uses Router.SendPaymentV2 (the streaming API) with amp=True.
+    LND derives the AMP secret server-side; the sender doesn't
+    invent a preimage. The recipient settles spontaneously if
+    accept_amp is enabled, the same way keysend works with
+    accept_keysend. Single-hop forced via outgoing_chan_id so the
+    payment doesn't accidentally take a multi-hop public-graph
+    route and pay routing fees.
+
+    Args:
+      dest_pubkey: hex pubkey of the peer (lowercase, 66 chars).
+      amount_sat: amount to send in sats.
+      outgoing_chan_id: short_channel_id of the channel to force-route
+        through. Required — same reason as _lnd_keysend.
+      label: stored in the LndPaymentLabel side-table on success so
+        the dashboard's cashout history surfaces this payment.
+
+    Returns True on terminal success, False on payment failure.
+    Raises: grpc.aio.AioRpcError on transport-level RPC failure
+    (mirrors _lnd_keysend's contract — callers must wrap).
+    """
+    conn = await _get_lnd_connection(api, wallet_id)
+    router_stub = conn["stubs"]["Router"]
+    request = _router_pb2.SendPaymentRequest(
+        dest=bytes.fromhex(dest_pubkey),
+        amt=int(amount_sat),
+        timeout_seconds=60,
+        # 1% fee cap is generous for a single-hop direct payment
+        # (which should be near-zero fee); the absolute floor of 10
+        # sat protects against the tiny-payment case where 1% rounds
+        # to 0 and the pathfinder rejects on fee_limit_sat=0.
+        fee_limit_sat=max(10, int(amount_sat) // 100),
+        outgoing_chan_id=int(outgoing_chan_id),
+        no_inflight_updates=True,
+        amp=True,
+    )
+    final = None
+    async for update in router_stub.SendPaymentV2(request):
+        final = update
+    # PaymentStatus enum: UNKNOWN=0, IN_FLIGHT=1, SUCCEEDED=2, FAILED=3
+    if final is None or final.status != 2:
+        if final is None:
+            reason = "no_response"
+        else:
+            reason = _lightning_pb2.PaymentFailureReason.Name(
+                final.failure_reason
+            )
+        logger.warning(
+            f"LND AMP send to {dest_pubkey[:16]}… (chan {outgoing_chan_id}) "
+            f"failed: {reason}"
+        )
+        return False
+    if label:
+        try:
+            from node_database import LndPaymentLabel
+            # SendPaymentV2's Payment message reports payment_hash as a
+            # hex string (unlike SendPaymentSync's bytes); accept either
+            # so the code is robust to LND proto variations.
+            ph = final.payment_hash
+            payment_hash_hex = (
+                ph.lower() if isinstance(ph, str)
+                else bytes(ph).hex().lower()
+            )
+            LndPaymentLabel.replace(
+                payment_hash=payment_hash_hex,
+                wallet_id=wallet_id,
+                label=label,
+            ).execute()
+        except Exception as e:
+            logger.warning(f"failed to persist LndPaymentLabel for AMP: {e}")
+    return True
+
+
 async def new_calc_invoice_stats(
     api: BitcartAPI,
     since_date: Optional[datetime.datetime] = None,
@@ -3673,24 +3762,32 @@ async def _do_keysend_cashouts_to_own_nodes(
     over each channel directly to the peer (zero LN routing fees).
 
     Per-channel logic:
-      - payable = local_balance - local_chan_reserve_sat - 100 (commit fee buffer)
+      - payable = local_balance - reserve - commit_fee - anchor_overhead - 100
+        (the anchor_overhead bit catches LND's ANCHORS commitment-type
+        funder cost — without it, payable exceeds LND's actual router
+        bandwidth on anchor channels and the payment is rejected)
       - skip if payable < MIN_LN_CASHOUT_IN_SATS (would lose to dust)
-      - keysend via _lnd_keysend with outgoing_chan_id forced to this
-        channel's chan_id, label=`CASHOUT_REASON:<peer_pubkey>` so the
-        dashboard surfaces it as a cashout with the peer in the
-        destination column
+      - try keysend first via _lnd_keysend (single-hop, outgoing_chan_id
+        forced; zero LN routing fees)
+      - if keysend fails (recipient may not have --accept-keysend),
+        fall back to AMP via _lnd_amp_send. Recipient just needs
+        --accept-amp (LND default: ON in recent versions, supported
+        by CLN/LDK/most mobile wallets too).
+      - on success, persist LndPaymentLabel with
+        `CASHOUT_REASON:<peer_pubkey>` so the dashboard surfaces it
+        as a cashout with the peer in the destination column.
 
     Note: FORCE_CASHOUT_AMOUNT_LN is intentionally not honored here.
     That knob applies to the external-cashout test path only — a
     forced amount that doesn't fit one of these channels would just
     fail and add noise.
 
-    Returns True if ANY channel's keysend succeeded — the caller treats
-    that as "LN cashout this tick was not a no-op" for the recency-
-    fallback / stranded-funds logic. Each successful keysend updates
-    LAST_SUCCESSFUL_LN_CASHOUT_PAYMENT (via _record_ln_payment_attempt_
-    outcome), so the on-chain staleness fallback clock resets the same
-    way a normal LN cashout does.
+    Returns True if ANY channel's payment (keysend OR AMP) succeeded —
+    the caller treats that as "LN cashout this tick was not a no-op"
+    for the recency-fallback / stranded-funds logic. Each successful
+    payment updates LAST_SUCCESSFUL_LN_CASHOUT_PAYMENT (via
+    _record_ln_payment_attempt_outcome), so the on-chain staleness
+    fallback clock resets the same way a normal LN cashout does.
 
     No external destination — the LN-address invoice path still runs
     separately for channels whose remote_pubkey isn't in OWN_LIGHTNING_NODES.
@@ -3768,6 +3865,7 @@ async def _do_keysend_cashouts_to_own_nodes(
             name="LAST_LN_CASHOUT_ATTEMPT",
             date=datetime.datetime.now(),
         ).execute()
+        used_rail = "keysend"
         try:
             ok = await _lnd_keysend(
                 api, wallet_id,
@@ -3782,12 +3880,42 @@ async def _do_keysend_cashouts_to_own_nodes(
                 f"{peer_pubkey[:16]}… raised: {e} {traceback.print_exc()}"
             )
             ok = False
+        # AMP fallback. Keysend requires --accept-keysend on the
+        # recipient (LND default: OFF); AMP requires --accept-amp
+        # (default: ON in recent LND, and supported by CLN/LDK/most
+        # mobile wallets). If keysend failed for ANY reason — recipient
+        # rejected, RPC error, routing issue — try AMP once before
+        # giving up. Worst case: one extra failed RPC per tick on a
+        # genuinely-broken channel; best case: an operator whose own
+        # node doesn't accept keysend still gets their cashout.
+        if not ok:
+            used_rail = "amp"
+            log_decision(
+                ("own_amp_fallback", wallet_id, peer_pubkey), True,
+                "OWN-node keysend to peer %s (wallet …%s) failed; "
+                "attempting AMP fallback for %s.",
+                peer_pubkey, wallet_short(wallet_id), fmt_btc_sats(payable),
+            )
+            try:
+                ok = await _lnd_amp_send(
+                    api, wallet_id,
+                    dest_pubkey=peer_pubkey,
+                    amount_sat=payable,
+                    outgoing_chan_id=chan_id,
+                    label=f"{CASHOUT_REASON}:{peer_pubkey}",
+                )
+            except Exception as e:
+                logger.error(
+                    f"_do_keysend_cashouts_to_own_nodes: AMP fallback to "
+                    f"{peer_pubkey[:16]}… raised: {e} {traceback.print_exc()}"
+                )
+                ok = False
         log_decision(
             ("own_keysend_attempt", wallet_id, peer_pubkey),
             "success" if ok else "failed",
-            "OWN-node keysend (wallet …%s, peer %s, %s): %s",
+            "OWN-node cashout (wallet …%s, peer %s, %s, rail=%s): %s",
             wallet_short(wallet_id), peer_pubkey,
-            fmt_btc_sats(payable),
+            fmt_btc_sats(payable), used_rail,
             "succeeded" if ok else "failed — will retry next tick",
         )
         # Update the cashout-side failing-streak markers per attempt.
@@ -3803,9 +3931,9 @@ async def _do_keysend_cashouts_to_own_nodes(
         )
         if ok:
             log_event(
-                "LN cashout (keysend to own node) sent: %s from wallet "
+                "LN cashout (%s to own node) sent: %s from wallet "
                 "…%s to peer %s via direct channel chan_id=%d",
-                fmt_btc_sats(payable),
+                used_rail, fmt_btc_sats(payable),
                 wallet_short(wallet_id), peer_pubkey, chan_id,
             )
             any_ok = True

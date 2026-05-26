@@ -179,7 +179,14 @@ PREFER_LN_CASHOUT: bool = False
 #   - LN → LN cashouts: existing local balance in channels to these
 #     peers is keysent BACK to the peer (no invoice round-trip, no
 #     LN routing fees beyond the direct hop). Treated as a normal LN
-#     cashout for accounting / fees / dashboard.
+#     cashout for accounting / fees / dashboard. If your node rejects
+#     the keysend (LND's --accept-keysend is OFF by default), the
+#     engine automatically retries via AMP (spontaneous AMP payment,
+#     accepted by LND with --accept-amp which IS on by default in
+#     recent versions, plus CLN/LDK/most mobile wallets). For maximum
+#     compatibility, enable BOTH on your destination node — the
+#     engine prefers keysend (slightly cheaper protocol overhead) and
+#     only falls back when keysend is rejected.
 #
 #   - Channel audit: these channels are SKIPPED. We assume your node
 #     may be offline / on a phone / on tor — audit metrics computed

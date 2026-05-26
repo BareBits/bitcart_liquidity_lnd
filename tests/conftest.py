@@ -372,6 +372,11 @@ class LndNode:
     rpc_port: int = field(default_factory=_free_port)
     p2p_port: int = field(default_factory=_free_port)
     password: bytes = b"testpassword1234"
+    # Default: True (LND starts with --accept-keysend). The AMP-fallback
+    # test for OWN_LIGHTNING_NODES sets this False on the destination
+    # node specifically, so a keysend attempt is rejected and the
+    # engine's AMP fallback kicks in.
+    accept_keysend: bool = True
     proc: Optional[subprocess.Popen] = None
     _macaroon_hex: str = ""
     _tls_cert: bytes = b""
@@ -398,20 +403,28 @@ class LndNode:
             "--tlsextradomain=localhost",
             "--nobootstrap",
             "--protocol.wumbo-channels",
-            # LND rejects keysend payments with "incorrect_payment_details"
-            # unless this is set. The OWN_LIGHTNING_NODES integration tests
-            # exercise the production keysend path (A->B cashout); the
-            # destination LND needs to accept keysends or every keysend
-            # cashout fails at the receiver, not the sender.
-            "--accept-keysend",
+            # --accept-amp accepts spontaneous AMP payments (the
+            # OWN_LIGHTNING_NODES AMP-fallback path the engine uses
+            # when keysend is rejected). On by default in recent LND
+            # but we set it explicitly to pin behavior across versions.
+            "--accept-amp",
             # The fixture opens A->B and B->A back-to-back. LND's default of
             # 1 pending channel per peer would reject the second open.
             "--maxpendingchannels=5",
+        ]
+        if self.accept_keysend:
+            # --accept-keysend opts in to receiving keysend payments
+            # (LND default: OFF). The OWN_LIGHTNING_NODES integration
+            # tests exercise the production keysend path; setting this
+            # to False on a node lets us pin the keysend-rejected
+            # branch for the AMP-fallback test.
+            args.append("--accept-keysend")
+        args.extend([
             "--debuglevel=info",
             f"--fee.url={self.fee_url}",
             # Keep retry storms quiet.
             "--minbackoff=10s",
-        ]
+        ])
         log = open(self.lnddir / "lnd.log", "wb")
         self.proc = subprocess.Popen(args, stdout=log, stderr=subprocess.STDOUT)
 
@@ -1015,13 +1028,17 @@ class LndPairNoChannels:
 
 
 async def _setup_lnd_pair_no_channels_async(
-    data_dir: Path, fee_url: str,
+    data_dir: Path, fee_url: str, *, b_accept_keysend: bool = True,
 ) -> LndPairNoChannels:
     """bitcoind + LND-A + LND-B, both funded 2 BTC, peered, but NO
     channels opened. Used by tests that drive channel creation
     themselves and need to assert on the resulting channel's state
     (e.g. the OWN_LIGHTNING_NODES direct-channel-push cashout, where
-    the push_sat behavior is what's under test)."""
+    the push_sat behavior is what's under test).
+
+    b_accept_keysend=False starts LND-B without --accept-keysend so a
+    keysend attempt is rejected at the recipient (AMP still works
+    via --accept-amp). Used by the AMP-fallback variant test."""
     btc = BitcoindNode(bin_dir=BIN_DIR, data_dir=data_dir / "bitcoind")
     btc.start()
     btc.ensure_miner_wallet()
@@ -1038,6 +1055,7 @@ async def _setup_lnd_pair_no_channels_async(
     b = LndNode(
         name="B", bin_dir=BIN_DIR, lnddir=data_dir / "lnd-b",
         bitcoind_p2p_port=btc.p2p_port, fee_url=fee_url,
+        accept_keysend=b_accept_keysend,
     )
     b.start()
     await b.init_wallet()
@@ -1289,6 +1307,31 @@ def lnd_electrum_pair(request, event_loop, _binaries, _fee_url, _wipe_data_dir) 
         yield pair
     finally:
         event_loop.run_until_complete(_teardown_lnd_electrum_pair_async(pair))
+
+
+@pytest.fixture(scope="function")
+def lnd_pair_no_channels_b_no_keysend(
+    request, event_loop, _binaries, _fee_url, _wipe_data_dir,
+) -> LndPairNoChannels:
+    """Like `lnd_pair_no_channels` but LND-B is started without
+    --accept-keysend. Keysends from A to B will be rejected at the
+    recipient ('incorrect_payment_details'); AMP still works since
+    --accept-amp is set on both. Used to pin the engine's
+    keysend→AMP fallback branch in _do_keysend_cashouts_to_own_nodes."""
+    short = uuid.uuid4().hex[:8]
+    data_dir = DATA_DIR / f"{request.node.name}-{short}"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    pair = event_loop.run_until_complete(
+        _setup_lnd_pair_no_channels_async(
+            data_dir, _fee_url, b_accept_keysend=False,
+        )
+    )
+    try:
+        yield pair
+    finally:
+        event_loop.run_until_complete(
+            _teardown_lnd_pair_no_channels_async(pair)
+        )
 
 
 @pytest.fixture(scope="function")

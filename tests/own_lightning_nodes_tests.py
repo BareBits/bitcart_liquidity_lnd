@@ -40,6 +40,7 @@ import liquidityhelper
 from database import SimpleDateTimeField
 from lnd_proto import lightning_pb2 as lnd_pb2
 from lnd_proto import lightning_pb2_grpc as lnd_pb2_grpc
+from lnd_proto import router_pb2_grpc as router_pb2_grpc
 
 
 # ---------------------------------------------------------------------------
@@ -70,15 +71,19 @@ def _wire_lnd_connection(monkeypatch, *, wallet_id: str, lnd_node) -> None:
     )
     # The engine accesses connection["stubs"][service]. We populate
     # Lightning (used for OpenChannelSync, ConnectPeer, SendPaymentSync,
-    # ListChannels) — that's all the OWN_LIGHTNING_NODES path needs.
-    # WalletKit (for LabelTransaction) is intentionally NOT wired up;
-    # the LabelTransaction call inside _attempt_direct_channel_cashout_to_own_node
+    # ListChannels) and Router (used by the AMP fallback in
+    # _do_keysend_cashouts_to_own_nodes via SendPaymentV2). WalletKit
+    # (for LabelTransaction) is intentionally NOT wired up; the
+    # LabelTransaction call inside _attempt_direct_channel_cashout_to_own_node
     # is best-effort and logged-but-tolerated when it fails.
     monkeypatch.setattr(
         liquidityhelper, "_LND_CONNECTIONS",
         {wallet_id: {
             "channel": channel,
-            "stubs": {"Lightning": lnd_pb2_grpc.LightningStub(channel)},
+            "stubs": {
+                "Lightning": lnd_pb2_grpc.LightningStub(channel),
+                "Router": router_pb2_grpc.RouterStub(channel),
+            },
             "macaroon_hex": macaroon_hex,
             "tls_cert": lnd_node._tls_cert,
         }}
@@ -399,4 +404,165 @@ def test_own_lightning_nodes_full_roundtrip(
     assert last_success is not None, (
         "LAST_SUCCESSFUL_LN_CASHOUT_PAYMENT should have been updated by "
         "the successful keysend"
+    )
+
+
+# ---------------------------------------------------------------------------
+# AMP fallback path
+# ---------------------------------------------------------------------------
+
+def test_own_lightning_nodes_amp_fallback_when_keysend_rejected(
+    lnd_pair_no_channels_b_no_keysend, event_loop, monkeypatch,
+):
+    """Production fallback path: when the OWN_LIGHTNING_NODES peer
+    rejects keysend (no --accept-keysend), _do_keysend_cashouts_to_
+    own_nodes must transparently retry via AMP and succeed. Matches
+    the real-world case where the operator's own node ships with
+    AMP-enabled-by-default but keysend-off (the LND default).
+
+    Reuses phases 1-2 of the full roundtrip to get balance back on
+    A's side, then asserts phase 3 succeeds via the AMP rail.
+    """
+    pair = lnd_pair_no_channels_b_no_keysend
+    bitcart_lnd = pair.a       # bitcart wallet
+    clientnode = pair.b        # operator's own LN node, KEYSEND DISABLED
+    wallet_id = "test-wallet-a"
+    clientnode_uri = (
+        f"{clientnode.identity_pubkey}@127.0.0.1:{clientnode.p2p_port}"
+    )
+    channel_size_sats = int(0.05 * 100_000_000)
+
+    _wire_lnd_connection(monkeypatch, wallet_id=wallet_id, lnd_node=bitcart_lnd)
+    monkeypatch.setattr(liquidityhelper, "PREFER_LN_CASHOUT", True, raising=False)
+    monkeypatch.setattr(liquidityhelper, "OWN_LIGHTNING_NODES", [clientnode_uri], raising=False)
+    monkeypatch.setattr(
+        liquidityhelper, "OWN_LIGHTNING_NODES_ANNOUNCE_CHANNELS",
+        False, raising=False,
+    )
+    monkeypatch.setattr(liquidityhelper, "MIN_LN_CASHOUT_IN_SATS", 100, raising=False)
+
+    # Phase 1: open channel + push_sat to B.
+    result_phase1 = event_loop.run_until_complete(
+        liquidityhelper._attempt_direct_channel_cashout_to_own_node(
+            api=None, wallet_id=wallet_id,
+            channel_size_sats=channel_size_sats,
+        )
+    )
+    assert result_phase1 is True
+
+    pair.bitcoind.mine_to_self(10)
+
+    async def _find_a_to_b_channel():
+        deadline = asyncio.get_event_loop().time() + 30.0
+        while asyncio.get_event_loop().time() < deadline:
+            for ch in await bitcart_lnd.list_channels():
+                if ch.get("remote_pubkey", "").lower() == clientnode.identity_pubkey.lower():
+                    if ch.get("active"):
+                        return ch
+            await asyncio.sleep(0.5)
+        raise AssertionError("channel never became active")
+
+    channel = event_loop.run_until_complete(_find_a_to_b_channel())
+    chan_id_str = channel.get("chan_id") or ""
+
+    async def _wait_for_clientnode_channel():
+        deadline = asyncio.get_event_loop().time() + 30.0
+        while asyncio.get_event_loop().time() < deadline:
+            for ch in await clientnode.list_channels():
+                if (ch.get("remote_pubkey", "").lower() == bitcart_lnd.identity_pubkey.lower()
+                        and ch.get("active")
+                        and (ch.get("chan_id") or "") == chan_id_str):
+                    return ch
+            await asyncio.sleep(0.5)
+        raise AssertionError("clientnode never saw the channel as active")
+    event_loop.run_until_complete(_wait_for_clientnode_channel())
+
+    # Wait for B's link manager to publish bandwidth to its router.
+    pair.bitcoind.mine_to_self(10)
+    event_loop.run_until_complete(asyncio.sleep(3))
+
+    # Phase 2: top-up B->A via invoice (same as the full-roundtrip
+    # test; gets balance back on A's side so phase 3 has something
+    # to cash out).
+    push_back_sat = 200_000
+    async def _top_up_via_invoice():
+        hop_hint = lnd_pb2.HopHint(
+            node_id=clientnode.identity_pubkey,
+            chan_id=int(chan_id_str),
+            fee_base_msat=1000,
+            fee_proportional_millionths=1,
+            cltv_expiry_delta=40,
+        )
+        add_resp = await bitcart_lnd._stub.AddInvoice(
+            lnd_pb2.Invoice(
+                value=push_back_sat,
+                memo="top-up",
+                private=True,
+                route_hints=[lnd_pb2.RouteHint(hop_hints=[hop_hint])],
+            )
+        )
+        send_resp = await clientnode._stub.SendPaymentSync(
+            lnd_pb2.SendRequest(payment_request=add_resp.payment_request)
+        )
+        if send_resp.payment_error:
+            raise AssertionError(f"top-up failed: {send_resp.payment_error}")
+    event_loop.run_until_complete(_top_up_via_invoice())
+
+    # Wait for A to observe the credit before phase 3 reads payable.
+    # Without this, phase 3 sees A's pre-top-up balance and only
+    # cashes out ~40k instead of the full ~240k.
+    async def _wait_for_local_growth(min_local: int, timeout_s: float = 15.0):
+        deadline = asyncio.get_event_loop().time() + timeout_s
+        while asyncio.get_event_loop().time() < deadline:
+            for ch in await bitcart_lnd.list_channels():
+                if ch.get("remote_pubkey", "").lower() == clientnode.identity_pubkey.lower():
+                    if int(ch.get("local_balance") or 0) >= min_local:
+                        return ch
+            await asyncio.sleep(0.5)
+        raise AssertionError(
+            f"bitcart_lnd's local_balance never reached {min_local} sat"
+        )
+    event_loop.run_until_complete(
+        _wait_for_local_growth(min_local=push_back_sat - 5000)
+    )
+
+    # Phase 3 — the actual point of this test. Keysend will fail
+    # (B has no --accept-keysend); AMP fallback should succeed.
+    own_channels = [
+        ch for ch in event_loop.run_until_complete(bitcart_lnd.list_channels())
+        if ch.get("remote_pubkey", "").lower() == clientnode.identity_pubkey.lower()
+    ]
+    assert own_channels, "expected one OWN-node channel at phase 3"
+
+    result_phase3 = event_loop.run_until_complete(
+        liquidityhelper._do_keysend_cashouts_to_own_nodes(
+            api=None, wallet_id=wallet_id, own_channels=own_channels,
+        )
+    )
+    assert result_phase3 is True, (
+        "_do_keysend_cashouts_to_own_nodes should return True via the "
+        "AMP fallback when keysend is rejected by the recipient"
+    )
+
+    # Balance drained on A's side (regardless of which rail carried it).
+    async def _wait_for_local_drained(max_local: int, timeout_s: float = 15.0):
+        deadline = asyncio.get_event_loop().time() + timeout_s
+        while asyncio.get_event_loop().time() < deadline:
+            for ch in await bitcart_lnd.list_channels():
+                if ch.get("remote_pubkey", "").lower() == clientnode.identity_pubkey.lower():
+                    if int(ch.get("local_balance") or 0) <= max_local:
+                        return ch
+            await asyncio.sleep(0.5)
+        raise AssertionError(
+            f"bitcart_lnd's local_balance never drained below {max_local} sat"
+        )
+
+    event_loop.run_until_complete(_wait_for_local_drained(max_local=60_000))
+
+    # Recency marker bumped — engine treats the AMP fallback as a
+    # real successful LN cashout, same as a successful keysend.
+    last_success = liquidityhelper.get_last_date("LAST_SUCCESSFUL_LN_CASHOUT_PAYMENT")
+    assert last_success is not None, (
+        "LAST_SUCCESSFUL_LN_CASHOUT_PAYMENT must be updated whether "
+        "the cashout went via keysend or AMP"
     )
