@@ -221,19 +221,26 @@ def test_ln_known_stale_for_fee_ignores_force_flag(monkeypatch):
 
 def test_ln_known_stale_for_fee_when_stale(monkeypatch):
     _set(monkeypatch, FEE_SWITCH_TO_ONCHAIN_AFTER_X_DAYS=30)
+    # _ln_known_stale_for_fee_payment now reads the failure-streak
+    # marker (FIRST_LN_FEE_FAILURE_SINCE_SUCCESS), not the success
+    # timestamp. An old success + an old failure-since-success means a
+    # streak that has been failing for longer than the threshold.
     _record_ln_event("LAST_SUCCESSFUL_LN_FEE_PAYMENT", days_ago=60)
+    _record_ln_event("FIRST_LN_FEE_FAILURE_SINCE_SUCCESS", days_ago=60)
     assert liquidityhelper._ln_known_stale_for_fee_payment() is True
 
 
 def test_ln_known_stale_for_referral_when_stale(monkeypatch):
     _set(monkeypatch, REFERRAL_SWITCH_TO_ONCHAIN_AFTER_X_DAYS=30)
     _record_ln_event("LAST_SUCCESSFUL_LN_REFERRAL_PAYMENT", days_ago=60)
+    _record_ln_event("FIRST_LN_REFERRAL_FAILURE_SINCE_SUCCESS", days_ago=60)
     assert liquidityhelper._ln_known_stale_for_referral_payment() is True
 
 
 def test_ln_known_stale_for_cashout_when_stale(monkeypatch):
     _set(monkeypatch, CASHOUT_SWITCH_TO_ONCHAIN_AFTER_X_DAYS=30)
     _record_ln_event("LAST_SUCCESSFUL_LN_CASHOUT_PAYMENT", days_ago=60)
+    _record_ln_event("FIRST_LN_CASHOUT_FAILURE_SINCE_SUCCESS", days_ago=60)
     assert liquidityhelper._ln_known_stale_for_cashout() is True
 
 

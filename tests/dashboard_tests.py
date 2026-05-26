@@ -176,7 +176,7 @@ def test_dashboard_usd_rate_propagates(monkeypatch):
     api.add_store("s1", wallets=["w1"], created="2025-01-01")
     # 100_000 sats = 0.001 BTC = $100
     api.add_invoice("s1", payments=[{
-        "amount": "0.001", "currency": "btc", "lightning": True,
+        "amount": "0.001", "currency": "btc", "symbol": "BTC", "lightning": True,
         "wallet_id": "w1", "is_used": True, "created": "2026-01-01T00:00:00",
     }])
     _setup_engine_dispatch(monkeypatch, api)
@@ -197,7 +197,7 @@ def test_dashboard_revenue_and_invoice_count(monkeypatch):
     api.add_store("s1", wallets=["w1"], created="2025-01-01")
     for i in range(3):
         api.add_invoice("s1", invoice_id=f"inv{i}", payments=[{
-            "amount": "0.0001", "currency": "btc", "lightning": True,
+            "amount": "0.0001", "currency": "btc", "symbol": "BTC", "lightning": True,
             "wallet_id": "w1", "is_used": True, "created": "2026-01-01T00:00:00",
         }])
     _setup_engine_dispatch(monkeypatch, api)
@@ -259,7 +259,7 @@ def test_dashboard_multi_store_summary_aggregates(monkeypatch):
     api.add_store("s-B", wallets=["w-B"], created="2025-01-02")
     # Store A: 50k sats revenue, 1 invoice
     api.add_invoice("s-A", payments=[{
-        "amount": "0.0005", "currency": "btc", "lightning": True,
+        "amount": "0.0005", "currency": "btc", "symbol": "BTC", "lightning": True,
         "wallet_id": "w-A", "is_used": True, "created": "2026-01-01T00:00:00",
     }])
     # Store B: 30k sats revenue, 2 invoices @ 15k each.
@@ -268,7 +268,7 @@ def test_dashboard_multi_store_summary_aggregates(monkeypatch):
     # rounds to 14999, not 15000).
     for i in range(2):
         api.add_invoice("s-B", invoice_id=f"B{i}", payments=[{
-            "amount": "0.000125", "currency": "btc", "lightning": True,
+            "amount": "0.000125", "currency": "btc", "symbol": "BTC", "lightning": True,
             "wallet_id": "w-B", "is_used": True, "created": "2026-01-01T00:00:00",
         }])
     _setup_engine_dispatch(monkeypatch, api)
@@ -304,7 +304,7 @@ def test_dashboard_amount_saved_clamps_at_zero(monkeypatch):
     api.add_store("s1", wallets=["w1"], created="2025-01-01")
     # 10k sats revenue, but huge on-chain swap fee
     api.add_invoice("s1", payments=[{
-        "amount": "0.0001", "currency": "btc", "lightning": True,
+        "amount": "0.0001", "currency": "btc", "symbol": "BTC", "lightning": True,
         "wallet_id": "w1", "is_used": True, "created": "2026-01-01T00:00:00",
     }])
     api.add_onchain_tx("w1", fee_sat=999999, label="OUTGOING SWAP", amount_sat=0)
@@ -356,7 +356,11 @@ def client(monkeypatch):
     Use a default no-store API; individual tests can re-patch as needed."""
     api = FakeBitcartAPI()
     _setup_engine_dispatch(monkeypatch, api)
-    app = FastAPI()
+    # Production mounts the router under bitcart's app which sets
+    # root_path="/api"; the dashboard router's prefix deliberately
+    # omits /api/ to avoid double-mounting in production. Mirror that
+    # here so the test routes resolve at /api/plugins/liquidityhelper/...
+    app = FastAPI(root_path="/api")
     app.include_router(dashboard_mod.build_router(auth_dependency=None))
     return TestClient(app), api
 

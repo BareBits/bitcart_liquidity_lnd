@@ -274,7 +274,7 @@ async def _get_inbound_liquidity(wallet: Dict[str, Any], api: Any) -> Tuple[int,
     currency = wallet.get("currency")
     try:
         if currency == "btclnd":
-            from ..liquidityhelper import lnd_rpc
+            from liquidityhelper import lnd_rpc
             resp = await lnd_rpc(api, wallet_id, "ListChannels", {}, "Lightning")
             if not isinstance(resp, dict):
                 return (0, 0)
@@ -413,7 +413,7 @@ async def _gather_payment_rows(
     when present.
     """
     # Lazy import so this module remains importable without engine.
-    from ..liquidityhelper import list_onchain_history, list_ln_payments_with_labels
+    from liquidityhelper import list_onchain_history, list_ln_payments_with_labels
 
     method_overrides = method_overrides or {}
     rows: List[PaymentRow] = []
@@ -695,7 +695,7 @@ async def compute_dashboard(api: Any, range_key: str) -> DashboardResponse:
 
     # Imported lazily so this module is importable in environments
     # where the engine isn't on sys.path (e.g. focused unit tests).
-    from ..liquidityhelper import new_calc_invoice_stats
+    from liquidityhelper import new_calc_invoice_stats
 
     # USD rate — None on failure; downstream renders as '—'.
     btc_usd_rate = await api.get_btc_usd_rate()
@@ -869,7 +869,7 @@ async def compute_dashboard(api: Any, range_key: str) -> DashboardResponse:
     # config sanity) + one dynamic check (LN cashouts stale while LN
     # balance exists). Emitted to decisions.log via log_decision inside
     # the audit fn, so the dashboard and the log stream agree.
-    from ..liquidityhelper import collect_health_warnings
+    from liquidityhelper import collect_health_warnings
     try:
         health_warnings_raw = await collect_health_warnings(api)
     except Exception as e:
@@ -933,7 +933,7 @@ def build_router(auth_dependency: Any | None = None) -> APIRouter:
                 return cached
         # Resolve the Bitcart API — same lazy import the rest of the
         # plugin uses to avoid a hard module-load dependency.
-        from ..liquidityhelper import _get_dashboard_api
+        from liquidityhelper import _get_dashboard_api
         api = await _get_dashboard_api()
         try:
             payload = await compute_dashboard(api, range)

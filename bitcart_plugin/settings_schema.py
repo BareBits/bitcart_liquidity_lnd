@@ -36,6 +36,7 @@ table then override the corresponding config.py defaults at runtime
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 
 # Bitcart's Schema base lives at api.schemas.base; in plugin context it
@@ -173,3 +174,27 @@ PluginSettings = _build_settings_class()
 # Convenience: the explicit set of names this schema covers. Used by the
 # settings-bridge to know which module attrs are eligible for override.
 SETTING_NAMES: FrozenSet[str] = frozenset(PluginSettings.model_fields.keys())
+
+
+def get_settings_groups() -> List[Tuple[str, List[str]]]:
+    """Return PluginSettings fields grouped by their config.py banner.
+
+    Each entry is `(group_name, [setting_name, ...])`. Groups are in
+    source-declaration order (matches config.py top-to-bottom); within
+    a group, settings are in source order too. _EXCLUDED settings are
+    omitted; settings declared without a preceding `# === ... ===`
+    banner land in a synthetic "Other" group.
+
+    Consumed by plugin.py's `/schema` endpoint to render the admin UI
+    in tabbed sections.
+    """
+    parsed = parse_config_module()
+    grouped: "OrderedDict[str, List[str]]" = OrderedDict()
+    for name, info in parsed.items():
+        if name in _EXCLUDED:
+            continue
+        if name not in SETTING_NAMES:
+            continue
+        group = info.group or "Other"
+        grouped.setdefault(group, []).append(name)
+    return list(grouped.items())

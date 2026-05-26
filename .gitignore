@@ -32,3 +32,6 @@ loop_bin/
 *.pyc
 .coverage
 .coverage.*
+liquidityhelper.log
+liquidityhelper.log.*
+decisions.log

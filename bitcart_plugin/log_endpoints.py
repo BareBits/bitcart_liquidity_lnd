@@ -85,7 +85,7 @@ def install_plugin_log_sinks(data_dir: str) -> None:
     """
     # Imported lazily so this module is still importable for tests that
     # don't have the engine loaded yet.
-    from ..liquidityhelper import (
+    from liquidityhelper import (
         add_async_log_handler, listener as _engine_listener,
     )
     from logging import Filter, LogRecord
@@ -257,7 +257,7 @@ def build_debug_router(auth_dependency: Any | None = None) -> APIRouter:
         """Trigger one tick when in debug mode."""
         # Lazy-import the engine so this module is importable in
         # focused unit tests that don't load the full liquidityhelper.
-        from ..liquidityhelper import trigger_debug_run_once
+        from liquidityhelper import trigger_debug_run_once
         import liquidityhelper as _engine
         debug_on = bool(getattr(_engine, "DEBUG_MODE", False))
         if not debug_on:

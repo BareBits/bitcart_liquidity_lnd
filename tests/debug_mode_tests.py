@@ -228,8 +228,11 @@ def test_stop_event_interrupts_debug_wait(monkeypatch, event_loop):
 
 @pytest.fixture
 def debug_client(monkeypatch):
-    """FastAPI test client with the debug router mounted, no auth."""
-    app = FastAPI()
+    """FastAPI test client with the debug router mounted, no auth.
+
+    root_path="/api" mirrors production (bitcart's app sets it), since
+    the router prefix deliberately omits /api/ to avoid double-mount."""
+    app = FastAPI(root_path="/api")
     app.include_router(log_endpoints.build_debug_router(auth_dependency=None))
     return TestClient(app)
 

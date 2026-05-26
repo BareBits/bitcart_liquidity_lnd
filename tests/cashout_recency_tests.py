@@ -174,6 +174,13 @@ def test_do_cashouts_falls_back_to_onchain_when_ln_fails_and_stale(monkeypatch, 
         name="LAST_SUCCESSFUL_LN_CASHOUT_PAYMENT",
         date=datetime.datetime.now() - datetime.timedelta(days=30),
     ).execute()
+    # _ln_known_stale_for_cashout reads the failure-streak marker, not
+    # the success timestamp. Mocked do_ln_cashouts won't update either,
+    # so we seed an old first-failure to satisfy the staleness check.
+    SimpleDateTimeField.replace(
+        name="FIRST_LN_CASHOUT_FAILURE_SINCE_SUCCESS",
+        date=datetime.datetime.now() - datetime.timedelta(days=30),
+    ).execute()
 
     # Mock LN to FAIL — this is what triggers the drain.
     called = []
@@ -572,8 +579,16 @@ import logging
 
 
 def _set_stale_ln(days_ago: int = 30) -> None:
+    """Mark the cashout-LN rail as having been failing for `days_ago`
+    days. _ln_known_stale_for_cashout reads the failure-streak marker
+    (FIRST_LN_CASHOUT_FAILURE_SINCE_SUCCESS); we also seed the last-
+    success timestamp for tests that log it for human readability."""
     SimpleDateTimeField.replace(
         name="LAST_SUCCESSFUL_LN_CASHOUT_PAYMENT",
+        date=datetime.datetime.now() - datetime.timedelta(days=days_ago),
+    ).execute()
+    SimpleDateTimeField.replace(
+        name="FIRST_LN_CASHOUT_FAILURE_SINCE_SUCCESS",
         date=datetime.datetime.now() - datetime.timedelta(days=days_ago),
     ).execute()
 

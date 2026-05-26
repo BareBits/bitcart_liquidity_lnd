@@ -41,11 +41,11 @@ def test_loopd_instance_stop_is_async():
 # stop() behavior
 # ---------------------------------------------------------------------------
 
-def _make_instance(tmp_path: Path) -> swap_providers.LoopdInstance:
+def _make_instance(tmp_path: Path, wallet_id: str = "test") -> swap_providers.LoopdInstance:
     """Build a LoopdInstance without spawning anything — just enough
     fields populated to call .stop()."""
     return swap_providers.LoopdInstance(
-        wallet_id="test",
+        wallet_id=wallet_id,
         bin_dir=tmp_path / "bin",
         data_dir=tmp_path / "data",
         lnd_grpc_host="127.0.0.1:10009",
@@ -164,8 +164,11 @@ def test_stop_all_awaits_each_instance(tmp_path, event_loop):
     """LoopdManager.stop_all() iterates instances and awaits each one's
     stop(). Pin against a regression where stop() goes back to sync but
     stop_all still works incidentally."""
-    inst1 = _make_instance(tmp_path / "i1")
-    inst2 = _make_instance(tmp_path / "i2")
+    # Distinct wallet_ids so LoopdManager._instances stores both (it's
+    # keyed by wallet_id; same-key registers would overwrite, and the
+    # original test's set-equality assertion silently masked that).
+    inst1 = _make_instance(tmp_path / "i1", wallet_id="test1")
+    inst2 = _make_instance(tmp_path / "i2", wallet_id="test2")
     stopped = []
 
     class _FakeProc:
@@ -190,5 +193,5 @@ def test_stop_all_awaits_each_instance(tmp_path, event_loop):
     manager.register_existing(inst2)
 
     event_loop.run_until_complete(manager.stop_all())
-    assert stopped == ["test", "test"]   # both stop()s were awaited
+    assert stopped == ["test1", "test2"]   # both stop()s were awaited
     assert manager._instances == {}

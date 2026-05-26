@@ -72,8 +72,11 @@ def temp_data_dir():
 
 @pytest.fixture
 def client(temp_data_dir):
-    """FastAPI test client with our router mounted, no auth required."""
-    app = FastAPI()
+    """FastAPI test client with our router mounted, no auth required.
+
+    root_path="/api" mirrors production (bitcart's app sets it), since
+    the router prefix deliberately omits /api/ to avoid double-mount."""
+    app = FastAPI(root_path="/api")
     app.include_router(build_router(auth_dependency=None))
     return TestClient(app)
 
