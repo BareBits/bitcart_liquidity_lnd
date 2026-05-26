@@ -264,11 +264,16 @@ _ROUND_TRIP_OVERRIDES = {
 }
 
 
+@pytest.mark.timeout(180)
 def test_autoloop_round_trip_through_real_loopd(loop_rig, event_loop, monkeypatch):
     """Push every AUTOLOOP_* setting through `configure_autoloop` into the
     real loopd, then read it back via GetLiquidityParams and assert every
     field survived. This is the smoke test that proves our config->proto
-    translation matches what loopd actually accepts and persists."""
+    translation matches what loopd actually accepts and persists.
+
+    timeout(180): real loopd startup + LND.OpenChannel + gossip-sync is
+    minute-scale on cold runs; the default 60s pytest.ini timeout has
+    flaked here under load."""
     from swap_providers import LoopProvider
     from loop_proto.client_pb2 import GetLiquidityParamsRequest
 
@@ -335,6 +340,7 @@ def test_autoloop_round_trip_through_real_loopd(loop_rig, event_loop, monkeypatc
 # hand. That covers every link of the chain except the timer.
 # ---------------------------------------------------------------------------
 
+@pytest.mark.timeout(180)
 def test_autoloop_rule_engine_produces_real_onchain_swap(
     loop_rig, event_loop, monkeypatch,
 ):

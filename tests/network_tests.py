@@ -134,34 +134,22 @@ def test_attempt_cooperative_close_lnd(lnd_pair):
     asyncio.get_event_loop().run_until_complete(run())
 
 
-def test_find_offline_channels_closes_disconnected_lnd_peer(lnd_pair):
+def test_find_offline_channels_records_disconnected_lnd_peer(lnd_pair):
     """find_offline_channels' LND dispatch path: with Node B disconnected
-    from Node A AND a LightningNode DB record marking B as offline-recently,
-    calling find_offline_channels(wallet=A_wallet) should cooperatively
-    close the channel A->B."""
+    from Node A, calling find_offline_channels(wallet=A_wallet) should
+    record a failed uptime sample on B's LightningNode row. The function
+    itself does NOT close channels — that decision lives in the daily
+    audit_existing_peer pipeline (see find_offline_channels docstring).
+    This test pins the sample-recording responsibility."""
     wallet_id = "test-wallet-A"
     a = lnd_pair.a
     b = lnd_pair.b
+    b_pubkey = b.identity_pubkey.lower()
 
     async def run():
         _install_lnd_conn_for_test(wallet_id, a)
         try:
-            # 1. Seed the peewee LightningNode record so should_close_channel
-            #    has long-term-failed history to evaluate. The autouse fixture
-            #    in conftest.py wipes this table between tests.
-            from node_database import LightningNode
-            # Counts large enough that check_period_duration (freq*total)
-            # clears should_close_channel's 1-hour monitoring floor; ancient
-            # last_seen_online trips the OFFLINE_RECENTLY branch (>48h).
-            LightningNode.create(
-                node_address=b.identity_pubkey.lower(),
-                failed_uptime_checks=100,
-                total_uptime_checks=10000,
-                last_seen_online=datetime.datetime(2020, 1, 1),
-                last_lnd_query=datetime.datetime(1990, 1, 1),
-            )
-
-            # 2. Disconnect B from A so A's channel goes peer_state=DISCONNECTED.
+            # Disconnect B from A so A's channel goes peer_state=DISCONNECTED.
             await a._stub.DisconnectPeer(
                 lightning_pb2.DisconnectPeerRequest(pub_key=b.identity_pubkey)
             )
@@ -176,24 +164,35 @@ def test_find_offline_channels_closes_disconnected_lnd_peer(lnd_pair):
             else:
                 raise AssertionError("channel never went inactive after DisconnectPeer")
 
-            # 3. Call the function under test. LND refuses cooperative close
-            #    when the peer is offline ("try force closing it instead"),
-            #    which is exactly the scenario the function targets — so the
-            #    close call WILL raise. The point of this test is to verify
-            #    the LND dispatcher reaches that close call (i.e., listed
-            #    channels via LND, found the disconnected one, and routed
-            #    into attempt_cooperative_close's LND path).
-            with pytest.raises(grpc.aio.AioRpcError) as exc_info:
-                await liquidityhelper.find_offline_channels(
-                    wallet={"id": wallet_id, "currency": "btclnd"},
-                    api=None,
-                )
-            details = (exc_info.value.details() or "").lower()
-            assert (
-                "peer is offline" in details
-                or "channel link not found" in details
-                or "force closing" in details
-            ), f"unexpected RPC error from CloseChannel: {exc_info.value.details()}"
+            # Call the function under test. It iterates A's channels, finds
+            # the disconnected one, and records uptime samples on the peer's
+            # LightningNode row. find_offline_channels does NOT initiate any
+            # close (the docstring is explicit). The autouse fixture in
+            # conftest.py wipes LightningNode between tests; the function
+            # creates a defensive row for B if one doesn't already exist.
+            from node_database import LightningNode
+            await liquidityhelper.find_offline_channels(
+                wallet={"id": wallet_id, "currency": "btclnd"},
+                api=None,
+            )
+
+            # Verify the sample landed: B's row exists and has at least one
+            # failed uptime check recorded (both rolling and lifetime).
+            row = LightningNode.get_or_none(
+                LightningNode.node_address == b_pubkey
+            )
+            assert row is not None, (
+                f"find_offline_channels did not create a LightningNode row "
+                f"for disconnected peer {b_pubkey}"
+            )
+            assert row.failed_uptime_checks >= 1, (
+                f"expected failed_uptime_checks >= 1, got "
+                f"{row.failed_uptime_checks}"
+            )
+            assert row.recent_failed_uptime_checks >= 1, (
+                f"expected recent_failed_uptime_checks >= 1, got "
+                f"{row.recent_failed_uptime_checks}"
+            )
         finally:
             entry = liquidityhelper._LND_CONNECTIONS.pop(wallet_id, None)
             if entry is not None:
@@ -458,49 +457,60 @@ def test_electrum_pay_onchain_lnd_round_trips_label(lnd_pair):
 
 
 def test_find_channel_closings_lnd(lnd_pair):
-    """find_channel_closings' LND path: with no closed channels yet, the
-    helper returns {}. After cooperatively closing A->B (both peers online)
-    and mining a confirmation, the helper returns {b_pubkey: 1}. Excludes
-    FUNDING_CANCELED / ABANDONED close types per option-(a) semantics."""
-    wallet_id = "test-wallet-A"
+    """find_channel_closings' LND path: helper returns {} when no remote-
+    initiated closes exist. After B cooperatively closes B->A and the
+    close confirms, A's ClosedChannels surfaces the channel with
+    close_initiator=REMOTE, and the helper returns {b_pubkey: 1}.
+
+    Direction matters: find_channel_closings filters for REMOTE-initiated
+    closes (the docstring explains why — counting operator-initiated
+    closes would self-trigger the REMOTE_CLOSE_COUNT blacklist). So the
+    close must be initiated by B (the remote peer) for it to surface on
+    A's wallet's query."""
+    wallet_id_a = "test-wallet-A"
+    wallet_id_b = "test-wallet-B"
     a = lnd_pair.a
     b = lnd_pair.b
 
     async def run():
-        _install_lnd_conn_for_test(wallet_id, a)
+        _install_lnd_conn_for_test(wallet_id_a, a)
+        _install_lnd_conn_for_test(wallet_id_b, b)
         try:
-            # Baseline: nothing closed yet.
+            # Baseline: nothing closed yet on A's side.
             baseline = await liquidityhelper.find_channel_closings(
-                wallet={"id": wallet_id, "currency": "btclnd"}, api=None,
+                wallet={"id": wallet_id_a, "currency": "btclnd"}, api=None,
             )
             assert baseline == {}, f"expected no closings yet, got {baseline}"
 
-            # Cooperatively close A->B (peer online, so coop works).
+            # Have B initiate the cooperative close. Closing B->A makes B
+            # the LOCAL initiator and A the REMOTE side — exactly the
+            # close_initiator=REMOTE rows find_channel_closings counts.
             await liquidityhelper.attempt_cooperative_close(
-                channel_point=lnd_pair.a_to_b_channel_point,
-                wallet={"id": wallet_id, "currency": "btclnd"}, api=None,
+                channel_point=lnd_pair.b_to_a_channel_point,
+                wallet={"id": wallet_id_b, "currency": "btclnd"}, api=None,
             )
             # Mine enough to push the close tx into ClosedChannels on A.
             lnd_pair.bitcoind.mine_to_self(3)
 
             # Poll until A's ClosedChannels surfaces it.
-            for _ in range(30):
+            for _ in range(60):
                 counts = await liquidityhelper.find_channel_closings(
-                    wallet={"id": wallet_id, "currency": "btclnd"}, api=None,
+                    wallet={"id": wallet_id_a, "currency": "btclnd"}, api=None,
                 )
                 if counts:
                     break
                 await asyncio.sleep(0.5)
             else:
-                raise AssertionError("ClosedChannels never surfaced our coop close")
+                raise AssertionError("ClosedChannels never surfaced B's coop close")
 
             assert counts == {b.identity_pubkey.lower(): 1}, (
                 f"unexpected counts: {counts}"
             )
         finally:
-            entry = liquidityhelper._LND_CONNECTIONS.pop(wallet_id, None)
-            if entry is not None:
-                await entry["channel"].close()
+            for wid in (wallet_id_a, wallet_id_b):
+                entry = liquidityhelper._LND_CONNECTIONS.pop(wid, None)
+                if entry is not None:
+                    await entry["channel"].close()
 
     asyncio.get_event_loop().run_until_complete(run())
 

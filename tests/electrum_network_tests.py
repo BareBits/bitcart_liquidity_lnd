@@ -112,23 +112,17 @@ def test_attempt_cooperative_close_electrum(lnd_electrum_pair):
 # ---------------------------------------------------------------------------
 
 
-def test_find_offline_channels_electrum(lnd_electrum_pair):
-    """Seed Electrum's LightningNode DB record so LND looks offline-recent,
-    stop the LND process to force the peer into DISCONNECTED, then call
-    find_offline_channels for the Electrum wallet. Should reach the close
-    path on the Electrum side; channel transitions out of OPEN."""
+def test_find_offline_channels_records_electrum(lnd_electrum_pair):
+    """find_offline_channels (Electrum dispatch path): stop LND so Electrum
+    sees the channel peer as DISCONNECTED, then call find_offline_channels.
+    The function should record a failed uptime sample on the peer's
+    LightningNode row. It does NOT initiate any close — that decision lives
+    in the daily audit_existing_peer pipeline (see find_offline_channels
+    docstring). This test pins the sample-recording responsibility."""
     ep = lnd_electrum_pair
+    lnd_pubkey = ep.lnd.identity_pubkey.lower()
 
     async def run():
-        from node_database import LightningNode
-        LightningNode.create(
-            node_address=ep.lnd.identity_pubkey.lower(),
-            failed_uptime_checks=100,
-            total_uptime_checks=10000,
-            last_seen_online=datetime.datetime(2020, 1, 1),
-            last_lnd_query=datetime.datetime(1990, 1, 1),
-        )
-
         # Knock LND offline so Electrum sees the channel peer as DISCONNECTED.
         await ep.lnd.stop_grpc()
         ep.lnd.stop()
@@ -140,15 +134,31 @@ def test_find_offline_channels_electrum(lnd_electrum_pair):
                 break
             await asyncio.sleep(0.5)
 
-        # Run the function under test.
+        # Run the function under test. find_offline_channels creates a
+        # defensive LightningNode row if one doesn't exist (the autouse
+        # fixture in conftest.py wipes this table between tests).
         await liquidityhelper.find_offline_channels(wallet=ELECTRUM_WALLET)
 
-        # Verify at least one OPEN channel got its cooperative_close_requested
-        # row written, or transitioned out of OPEN state.
-        from node_database import LightningChannel
-        rows = list(LightningChannel.select())
-        assert rows, "find_offline_channels did not attempt any close"
-        assert any(r.cooperative_close_requested for r in rows)
+        # Verify the sample landed: LND's peer row has a failed uptime
+        # check recorded (both rolling and lifetime). No LightningChannel
+        # rows are written by find_offline_channels — close is the daily
+        # audit pipeline's job, not this function's.
+        from node_database import LightningNode
+        row = LightningNode.get_or_none(
+            LightningNode.node_address == lnd_pubkey
+        )
+        assert row is not None, (
+            f"find_offline_channels did not create a LightningNode row "
+            f"for disconnected peer {lnd_pubkey}"
+        )
+        assert row.failed_uptime_checks >= 1, (
+            f"expected failed_uptime_checks >= 1, got "
+            f"{row.failed_uptime_checks}"
+        )
+        assert row.recent_failed_uptime_checks >= 1, (
+            f"expected recent_failed_uptime_checks >= 1, got "
+            f"{row.recent_failed_uptime_checks}"
+        )
 
     _run(run())
 
@@ -158,38 +168,34 @@ def test_find_offline_channels_electrum(lnd_electrum_pair):
 # ---------------------------------------------------------------------------
 
 
-def test_find_channel_closings_electrum(lnd_electrum_pair):
-    """Baseline: no closings. After cooperatively closing Electrum->LND and
-    mining enough blocks for the channel to reach Electrum's REDEEMED state,
-    find_channel_closings returns {lnd_pubkey: 1}."""
+def test_find_channel_closings_electrum_always_empty(lnd_electrum_pair):
+    """find_channel_closings (Electrum dispatch path) deliberately returns
+    {} for ALL Electrum wallets — Electrum's list_channels doesn't expose
+    close_initiator, so we'd misattribute operator-initiated closes as
+    remote-closes and self-trigger the REMOTE_CLOSE_COUNT blacklist (see
+    find_channel_closings docstring). This test pins that intentional
+    behavior: even after a coop close that actually completes, the
+    function still returns {} for an Electrum wallet."""
     ep = lnd_electrum_pair
 
     async def run():
         baseline = await liquidityhelper.find_channel_closings(wallet=ELECTRUM_WALLET)
-        assert baseline == {}, f"expected no closings yet, got {baseline}"
+        assert baseline == {}, f"expected {{}}, got {baseline}"
 
-        # Coop close. Both peers online -> close succeeds; mining drives the
-        # channel through CLOSED -> REDEEMED in Electrum's state machine.
+        # Close a channel and mine confirmations; the function must still
+        # return {} for the Electrum wallet — that's the contract.
         await liquidityhelper.attempt_cooperative_close(
             channel_point=ep.electrum_to_lnd_channel_point, wallet=ELECTRUM_WALLET,
         )
-        # Electrum considers a closing tx "deeply mined" (and therefore the
-        # channel REDEEMED, not just CLOSED) only after >100 confirmations.
-        # `find_channel_closings` only counts REDEEMED — mirror LND's
-        # ClosedChannels semantic. Mine well past the threshold.
         ep.bitcoind.mine_to_self(110)
 
-        last_chans = []
-        for i in range(60):
-            counts = await liquidityhelper.find_channel_closings(wallet=ELECTRUM_WALLET)
-            if counts.get(ep.lnd.identity_pubkey.lower()) == 1:
-                return
-            last_chans = ep.electrum.list_channels()
+        # Give the close some time to mature, then assert {} still.
+        for _ in range(10):
             await asyncio.sleep(0.5)
-        states = {c.get("channel_point"): c.get("state") for c in last_chans}
-        raise AssertionError(
-            f"find_channel_closings never returned LND pubkey count=1; "
-            f"last counts={counts}, channel states={states}"
+        counts = await liquidityhelper.find_channel_closings(wallet=ELECTRUM_WALLET)
+        assert counts == {}, (
+            f"Electrum dispatch path must return {{}} regardless of actual "
+            f"closures, but got {counts}"
         )
 
     _run(run())
