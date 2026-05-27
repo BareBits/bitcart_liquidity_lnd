@@ -208,6 +208,95 @@ def test_dashboard_revenue_and_invoice_count(monkeypatch):
     assert store.revenue.sats == 30_000   # 3 × 10k
 
 
+def test_dashboard_fees_due_matches_eligible_revenue_times_rate(monkeypatch):
+    """developer_fees_due == revenue_eligible_for_fee × FEE_AMOUNT, and
+    hosting_fees_due == revenue_eligible_for_fee × REFERRAL_FEE_AMOUNT.
+    Mirrors the same formula `calculate_fees()` uses at liquidityhelper.py:3321.
+
+    Uses 1 BTC of eligible revenue, FEE_AMOUNT=0.02, REFERRAL=0.005
+    so the expected numbers are large enough to spot in the assert:
+    dev_due = 2_000_000 sats, hosting_due = 500_000 sats."""
+    import importlib, config
+    importlib.reload(config)
+    monkeypatch.setattr(config, "FEE_AMOUNT", 0.02, raising=False)
+    monkeypatch.setattr(config, "REFERRAL_FEE_AMOUNT", 0.005, raising=False)
+
+    api = FakeBitcartAPI()
+    api.add_wallet("w1", name="liquidityhelper")
+    api.add_store("s1", wallets=["w1"], created="2025-01-01")
+    # 1 BTC = 100_000_000 sats, all eligible (no promo/topup gating).
+    api.add_invoice("s1", payments=[{
+        "amount": "1.0", "currency": "btc", "symbol": "BTC", "lightning": True,
+        "wallet_id": "w1", "is_used": True, "created": "2026-01-01T00:00:00",
+    }])
+    _setup_engine_dispatch(monkeypatch, api)
+
+    payload = _run(dashboard_mod.compute_dashboard(api, "all"))
+    store = payload.stores[0]
+    assert store.developer_fees_due.sats == 2_000_000, (
+        f"1 BTC × 0.02 = 2M sats; got {store.developer_fees_due.sats}"
+    )
+    assert store.hosting_fees_due.sats == 500_000, (
+        f"1 BTC × 0.005 = 500k sats; got {store.hosting_fees_due.sats}"
+    )
+    # Paid is zero (no fee-payment payouts in this scenario) — the UI
+    # uses (due − paid) to render the "owed" pill.
+    assert store.developer_fees_paid.sats == 0
+    assert store.hosting_fees_paid.sats == 0
+
+
+def test_dashboard_fees_due_zero_when_no_revenue(monkeypatch):
+    """No eligible revenue → both due fields are zero, even with a
+    configured fee rate. Pins against accidentally surfacing the
+    rate × 0 multiplication as something non-zero."""
+    import importlib, config
+    importlib.reload(config)
+    monkeypatch.setattr(config, "FEE_AMOUNT", 0.02, raising=False)
+    monkeypatch.setattr(config, "REFERRAL_FEE_AMOUNT", 0.005, raising=False)
+
+    api = FakeBitcartAPI()
+    api.add_wallet("w1", name="liquidityhelper")
+    api.add_store("s1", wallets=["w1"], created="2025-01-01")
+    _setup_engine_dispatch(monkeypatch, api)
+
+    payload = _run(dashboard_mod.compute_dashboard(api, "all"))
+    store = payload.stores[0]
+    assert store.developer_fees_due.sats == 0
+    assert store.hosting_fees_due.sats == 0
+
+
+def test_dashboard_summary_sums_fees_due_across_stores(monkeypatch):
+    """Multi-store dashboard: summary.developer_fees_due and
+    summary.hosting_fees_due are the sum of per-store dues. Mirrors the
+    existing paid-sum invariant for the dashboard's summary section."""
+    import importlib, config
+    importlib.reload(config)
+    monkeypatch.setattr(config, "FEE_AMOUNT", 0.02, raising=False)
+    monkeypatch.setattr(config, "REFERRAL_FEE_AMOUNT", 0.005, raising=False)
+
+    api = FakeBitcartAPI()
+    api.add_wallet("w-A", name="liquidityhelper")
+    api.add_wallet("w-B", name="liquidityhelper")
+    api.add_store("s-A", wallets=["w-A"], created="2025-01-01")
+    api.add_store("s-B", wallets=["w-B"], created="2025-01-01")
+    api.add_invoice("s-A", payments=[{
+        "amount": "0.5", "currency": "btc", "symbol": "BTC", "lightning": True,
+        "wallet_id": "w-A", "is_used": True, "created": "2026-01-01T00:00:00",
+    }])
+    api.add_invoice("s-B", payments=[{
+        "amount": "0.3", "currency": "btc", "symbol": "BTC", "lightning": True,
+        "wallet_id": "w-B", "is_used": True, "created": "2026-01-01T00:00:00",
+    }])
+    _setup_engine_dispatch(monkeypatch, api)
+
+    payload = _run(dashboard_mod.compute_dashboard(api, "all"))
+    assert payload.summary is not None
+    # 0.5 × 0.02 + 0.3 × 0.02 = 0.016 BTC = 1_600_000 sats
+    assert payload.summary.developer_fees_due.sats == 1_600_000
+    # 0.5 × 0.005 + 0.3 × 0.005 = 0.004 BTC = 400_000 sats
+    assert payload.summary.hosting_fees_due.sats == 400_000
+
+
 def test_dashboard_unpaid_invoices_excluded_from_count(monkeypatch):
     """An invoice without a paid_date must NOT count toward
     paid_invoice_count. Pin against a regression where pending

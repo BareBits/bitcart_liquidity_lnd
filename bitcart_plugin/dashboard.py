@@ -108,8 +108,16 @@ class StoreDashboard(BaseModel):
     revenue: _Money
     paid_invoice_count: int
     developer_fees_paid: _Money
+    # Gross developer fees ever owed: eligible_revenue × FEE_AMOUNT.
+    # The "balance" the engine will try to charge next tick is
+    # `due − paid` (clamped at 0); UI can compute that client-side.
+    # Network-fee credit toward the `due` total depends on the engine's
+    # FEES_PAID_INCLUDES_*_NETWORK_FEES flags and is NOT applied here —
+    # we expose principals so the UI math stays unambiguous.
+    developer_fees_due: _Money
     developer_fee_pct: Optional[float]   # paid / revenue; None if revenue==0
     hosting_fees_paid: _Money            # called "referral" internally
+    hosting_fees_due: _Money             # eligible_revenue × REFERRAL_FEE_AMOUNT
     hosting_fee_pct: Optional[float]
     network_fees_total: _Money
     network_fee_breakdown: FeeBreakdown
@@ -126,7 +134,9 @@ class SummaryDashboard(BaseModel):
     revenue: _Money
     paid_invoice_count: int
     developer_fees_paid: _Money
+    developer_fees_due: _Money
     hosting_fees_paid: _Money
+    hosting_fees_due: _Money
     network_fees_total: _Money
     network_fee_breakdown: FeeBreakdown
     amount_saved_vs_cc: _Money
@@ -867,8 +877,23 @@ async def compute_dashboard(api: Any, range_key: str) -> DashboardResponse:
     )
     sum_revenue_sats = 0
     sum_dev_sats = 0
+    sum_dev_due_sats = 0
     sum_hosting_sats = 0
+    sum_hosting_due_sats = 0
     sum_invoice_count = 0
+
+    # Configured rates. Read once — same values flow into every
+    # per-store `*_fees_due` computation. Defaults match the engine
+    # in config.py: FEE_AMOUNT=0.02 (2%), REFERRAL_FEE_AMOUNT=0
+    # (no referral collection unless the operator opted in).
+    try:
+        import config as _cfg
+        _fee_rate = float(getattr(_cfg, "FEE_AMOUNT", 0.02) or 0)
+        _referral_rate = float(getattr(_cfg, "REFERRAL_FEE_AMOUNT", 0) or 0)
+    except Exception as e:
+        logger.warning(f"compute_dashboard: could not read fee config: {e} {traceback.format_exc()}")
+        _fee_rate = 0.0
+        _referral_rate = 0.0
 
     for store in store_list:
         store_id = store["id"]
@@ -915,6 +940,16 @@ async def compute_dashboard(api: Any, range_key: str) -> DashboardResponse:
         dev_sats = int(stats.total_bb_fees_paid_in_sats or 0)
         hosting_sats = int(stats.total_referral_fees_paid_in_sats or 0)
 
+        # Gross "due" totals based on lifetime eligible revenue
+        # (matches the calculation in calculate_fees at
+        # liquidityhelper.py:3321). `revenue_eligible_for_fee` excludes
+        # promo, topup, bb-topup, and non-LH-wallet revenue; that's the
+        # same base the engine multiplies by FEE_AMOUNT to decide what
+        # to charge.
+        eligible_sats = int(stats.revenue_eligible_for_fee or 0)
+        dev_due_sats = int(eligible_sats * _fee_rate)
+        hosting_due_sats = int(eligible_sats * _referral_rate)
+
         breakdown = _network_breakdown_from_stats(stats)
         network_total_sats = _sum_breakdown(breakdown)
 
@@ -937,8 +972,10 @@ async def compute_dashboard(api: Any, range_key: str) -> DashboardResponse:
             revenue=_money(revenue_sats, btc_usd_rate),
             paid_invoice_count=paid_invoice_count,
             developer_fees_paid=_money(dev_sats, btc_usd_rate),
+            developer_fees_due=_money(dev_due_sats, btc_usd_rate),
             developer_fee_pct=_safe_pct(dev_sats, revenue_sats),
             hosting_fees_paid=_money(hosting_sats, btc_usd_rate),
+            hosting_fees_due=_money(hosting_due_sats, btc_usd_rate),
             hosting_fee_pct=_safe_pct(hosting_sats, revenue_sats),
             network_fees_total=_money(network_total_sats, btc_usd_rate),
             network_fee_breakdown=breakdown,
@@ -957,7 +994,9 @@ async def compute_dashboard(api: Any, range_key: str) -> DashboardResponse:
         summary_breakdown = _add_breakdowns(summary_breakdown, breakdown)
         sum_revenue_sats += revenue_sats
         sum_dev_sats += dev_sats
+        sum_dev_due_sats += dev_due_sats
         sum_hosting_sats += hosting_sats
+        sum_hosting_due_sats += hosting_due_sats
         sum_invoice_count += paid_invoice_count
 
     # Summary only when there's more than one store
@@ -971,7 +1010,9 @@ async def compute_dashboard(api: Any, range_key: str) -> DashboardResponse:
             revenue=_money(sum_revenue_sats, btc_usd_rate),
             paid_invoice_count=sum_invoice_count,
             developer_fees_paid=_money(sum_dev_sats, btc_usd_rate),
+            developer_fees_due=_money(sum_dev_due_sats, btc_usd_rate),
             hosting_fees_paid=_money(sum_hosting_sats, btc_usd_rate),
+            hosting_fees_due=_money(sum_hosting_due_sats, btc_usd_rate),
             network_fees_total=_money(summary_network_total, btc_usd_rate),
             network_fee_breakdown=summary_breakdown,
             amount_saved_vs_cc=_money(summary_saved, btc_usd_rate),

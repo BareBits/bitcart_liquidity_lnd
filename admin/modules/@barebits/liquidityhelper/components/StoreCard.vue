@@ -16,33 +16,54 @@
             <span class="kv-value">{{ store.paid_invoice_count }}</span>
           </div>
 
-          <!-- Developer fee. Showing both the ACTUAL paid percentage
-               and the CONFIGURED rate (from settings) so the operator
-               can see whether the plugin's collection lines up with
-               what they've set the rate to. -->
+          <!-- Developer fee. Three numbers:
+                 paid (delivered to LN_FEE_DEST/ONCHAIN_FEE_DEST),
+                 of due (eligible_revenue × FEE_AMOUNT, cumulative),
+                 balance (due − paid; >0 means owed, ≤0 means caught up).
+               Balance is computed client-side so a future change to the
+               engine's network-fee credit policy doesn't need a backend
+               change to keep the math obvious. -->
           <div class="kv-row">
             <span class="kv-label">Developer fees paid:</span>
             <span class="kv-value">
               {{ formatBtcSats(store.developer_fees_paid) }} /
               {{ formatUsd(store.developer_fees_paid) }}
               <span class="kv-meta">
+                of {{ formatBtcSats(store.developer_fees_due) }} /
+                {{ formatUsd(store.developer_fees_due) }} due
                 ({{ formatPct(store.developer_fee_pct) }} of revenue<span
                   v-if="developerRateConfigured !== null">,
                   configured rate {{ formatPct(developerRateConfigured) }}</span>)
               </span>
+              <span v-if="developerBalanceSats > 0" class="kv-balance owed">
+                — {{ formatBtcSats(developerBalance) }} /
+                {{ formatUsd(developerBalance) }} owed
+              </span>
+              <span v-else-if="developerBalanceSats < 0" class="kv-balance overpaid">
+                — overpaid by {{ formatBtcSats(developerOverpayment) }}
+              </span>
             </span>
           </div>
 
-          <!-- Hosting/referral fee -->
+          <!-- Hosting/referral fee — same pattern as developer fee. -->
           <div class="kv-row">
             <span class="kv-label">Hosting / setup fees paid:</span>
             <span class="kv-value">
               {{ formatBtcSats(store.hosting_fees_paid) }} /
               {{ formatUsd(store.hosting_fees_paid) }}
               <span class="kv-meta">
+                of {{ formatBtcSats(store.hosting_fees_due) }} /
+                {{ formatUsd(store.hosting_fees_due) }} due
                 ({{ formatPct(store.hosting_fee_pct) }} of revenue<span
                   v-if="hostingRateConfigured !== null">,
                   configured rate {{ formatPct(hostingRateConfigured) }}</span>)
+              </span>
+              <span v-if="hostingBalanceSats > 0" class="kv-balance owed">
+                — {{ formatBtcSats(hostingBalance) }} /
+                {{ formatUsd(hostingBalance) }} owed
+              </span>
+              <span v-else-if="hostingBalanceSats < 0" class="kv-balance overpaid">
+                — overpaid by {{ formatBtcSats(hostingOverpayment) }}
               </span>
             </span>
           </div>
@@ -189,6 +210,33 @@ export default {
       const v = Number(this.settings.REFERRAL_FEE_AMOUNT)
       return Number.isFinite(v) ? v : null
     },
+    // Balance = due − paid in sats. Positive = engine will try to
+    // charge this much next tick (possibly minus network-fee credit
+    // depending on FEES_PAID_INCLUDES_*_NETWORK_FEES). Negative =
+    // operator has over-delivered (e.g. via FORCE_FEE_AMOUNT) and
+    // the engine will pay nothing until eligible revenue catches up.
+    developerBalanceSats() {
+      const paid = Number(this.store?.developer_fees_paid?.sats || 0)
+      const due = Number(this.store?.developer_fees_due?.sats || 0)
+      return due - paid
+    },
+    hostingBalanceSats() {
+      const paid = Number(this.store?.hosting_fees_paid?.sats || 0)
+      const due = Number(this.store?.hosting_fees_due?.sats || 0)
+      return due - paid
+    },
+    developerBalance() {
+      return this._asMoney(Math.max(0, this.developerBalanceSats))
+    },
+    developerOverpayment() {
+      return this._asMoney(Math.max(0, -this.developerBalanceSats))
+    },
+    hostingBalance() {
+      return this._asMoney(Math.max(0, this.hostingBalanceSats))
+    },
+    hostingOverpayment() {
+      return this._asMoney(Math.max(0, -this.hostingBalanceSats))
+    },
     // Live-recomputed savings. Mirrors what the backend does in
     // `compute_dashboard`: revenue × cc_pct − net_fees_paid, clamped
     // to >= 0 so a high net-fee period doesn't show "negative
@@ -258,6 +306,19 @@ export default {
   },
   methods: {
     formatBtcSats, formatUsd, formatPct, formatNumber,
+    // Synthesize a _Money-shaped object from a sat amount so the
+    // existing formatters work uniformly. USD per sat is borrowed from
+    // the same rate-source the rest of the card uses; null when the
+    // dashboard couldn't fetch a rate.
+    _asMoney(sats) {
+      const s = Math.max(0, Math.round(Number(sats) || 0))
+      const rate = this.usdPerSat
+      return {
+        sats: s,
+        btc: s / 100000000,
+        usd: rate !== null ? s * rate : null,
+      }
+    },
     renderChart() {
       const canvas = this.$refs.pieCanvas
       if (!canvas) return
@@ -347,4 +408,16 @@ export default {
 }
 .liquidity-label { margin-right: 6px; }
 .liquidity-meta { font-weight: 400; font-size: 0.9em; opacity: 0.9; }
+
+/* Balance pill following the "paid of due" annotation. `owed` is
+   amber so it reads as a soft warning (not an error — paying a few
+   sats short is normal between ticks); `overpaid` is green because
+   overpayment is fine. */
+.kv-balance {
+  margin-left: 6px;
+  font-weight: 600;
+  font-size: 0.95em;
+}
+.kv-balance.owed { color: #FFB300; }
+.kv-balance.overpaid { color: #4caf50; }
 </style>
