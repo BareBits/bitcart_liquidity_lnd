@@ -1016,9 +1016,13 @@ class BitcartAPI:
                 f"Error closing channel: {e} {traceback.format_exc()}"
             )
             return None
-    async def open_ln_channel(self,wallet_id:str,dest_node:str,amount_in_btc:float) -> Optional[Dict]:
+    async def open_ln_channel(self,wallet_id:str,dest_node:str,amount_sats:int) -> Optional[Dict]:
         """
-        Create a new LN channel
+        Create a new LN channel. `amount_sats` is the channel capacity in
+        satoshis (NOT BTC). BareBits's btclnd daemon (the only target this
+        path is gated to) takes the value as int sats and feeds it directly
+        to LND's OpenChannelSync.local_funding_amount; passing BTC here would
+        silently open a 0-sat channel (int(Decimal("0.001")) == 0).
 
         Args:
 
@@ -1027,7 +1031,7 @@ class BitcartAPI:
         """
         try:
             post_data = {
-                "amount": amount_in_btc,
+                "amount": int(amount_sats),
                 "node_id": dest_node,
             }
 

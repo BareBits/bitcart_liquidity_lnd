@@ -68,7 +68,7 @@ def test_move_onchain_to_ln_short_circuits_when_disabled(monkeypatch, event_loop
 
     result = event_loop.run_until_complete(
         liquidityhelper.move_onchain_to_ln(
-            wallet_id="w1", amount_in_btc=0.001, api=_RecordingAPI(),
+            wallet_id="w1", amount_sats=100_000, api=_RecordingAPI(),
         )
     )
     assert result is False
@@ -111,7 +111,7 @@ def test_move_onchain_to_ln_runs_when_enabled(monkeypatch, event_loop):
 
     event_loop.run_until_complete(
         liquidityhelper.move_onchain_to_ln(
-            wallet_id="w1", amount_in_btc=0.001, api=_StubAPI(),
+            wallet_id="w1", amount_sats=100_000, api=_StubAPI(),
         )
     )
     assert called["pick"] == 1

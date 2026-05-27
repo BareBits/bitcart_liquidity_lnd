@@ -2342,7 +2342,7 @@ async def pick_best_channel_partners(ln_cashout_address: Optional[str] = None) -
 
 
 async def move_onchain_to_ln(
-    wallet_id: str, amount_in_btc: float, api: BitcartAPI,
+    wallet_id: str, amount_sats: int, api: BitcartAPI,
     force_manual: bool = False,
 ) -> bool:
     """
@@ -2405,7 +2405,7 @@ async def move_onchain_to_ln(
             continue
         if DRY_RUN_FUNDS:
             logger.info(
-                f"DRY RUN: Skipping LN channel open {amount_in_btc}BTC to {partner} from wallet {wallet_id}"
+                f"DRY RUN: Skipping LN channel open {amount_sats} sats to {partner} from wallet {wallet_id}"
             )
         else:
             ln_node: Optional[LightningNode] = LightningNode.get_or_none(
@@ -2432,13 +2432,12 @@ async def move_onchain_to_ln(
                     f"In move_onchain_to_ln after LND graph refresh, node is {ln_node.node_address} blacklisted for reason {blacklist_reason}"
                 )
                 continue
-            amount_sats = btc_to_sats(amount_in_btc)
             log_event(
                 "Attempting channel open to %s for %s (wallet …%s)",
                 partner, fmt_btc_sats(amount_sats),
                 wallet_short(wallet_id),
             )
-            move_response = await api.open_ln_channel(wallet_id, partner, amount_in_btc)
+            move_response = await api.open_ln_channel(wallet_id, partner, amount_sats)
             if move_response:  # channel opened successfully
                 # move_response is a daemon-shaped dict (LND: funding_txid +
                 # output_index; Electrum: similar). Include the amount and
@@ -2468,7 +2467,7 @@ async def attempt_create_channels(
         if DRY_RUN_FUNDS:
             logger.info(f"DRY RUN: Would have opened channel w {i} sats")
             continue
-        result = await move_onchain_to_ln(wallet_id, sats_to_btc(i), api)
+        result = await move_onchain_to_ln(wallet_id, i, api)
         if result:
             return_value = True
     return return_value
@@ -4952,7 +4951,7 @@ async def _attempt_ln_channel_open_for_cashout(
     try:
         return await move_onchain_to_ln(
             wallet_id=wallet_id,
-            amount_in_btc=sats_to_btc(max_channel_size),
+            amount_sats=max_channel_size,
             api=api,
             force_manual=True,
         )
@@ -5487,7 +5486,7 @@ async def decide_onchain_to_ln(api:BitcartAPI):
             continue
         best_wallet=await api.get_best_ln_wallet_for_store(store)
         logger.debug(f'Moving leftover onchain funds to ln... {max_channel_size} sats {sats_to_btc(max_channel_size)} BTC, store {store_id}')
-        onchain_move_result=await move_onchain_to_ln(wallet_id=best_wallet['id'],amount_in_btc=sats_to_btc(max_channel_size),api=api)
+        onchain_move_result=await move_onchain_to_ln(wallet_id=best_wallet['id'],amount_sats=max_channel_size,api=api)
 
 async def setup_notifiers()->List[NotificationProvider]:
     return_list=[]

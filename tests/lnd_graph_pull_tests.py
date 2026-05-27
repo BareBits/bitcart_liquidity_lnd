@@ -3026,7 +3026,7 @@ def test_move_onchain_to_ln_skips_electrum_wallet(monkeypatch, event_loop):
     )
 
     result = event_loop.run_until_complete(
-        liquidityhelper.move_onchain_to_ln("w-electrum", 0.001, api)
+        liquidityhelper.move_onchain_to_ln("w-electrum", 100_000, api)
     )
     assert result is False, (
         "move_onchain_to_ln must return False for non-LND wallets"
@@ -3058,7 +3058,7 @@ def test_move_onchain_to_ln_runs_for_btclnd_wallet(monkeypatch, event_loop):
     )
 
     event_loop.run_until_complete(
-        liquidityhelper.move_onchain_to_ln("w-lnd", 0.001, api)
+        liquidityhelper.move_onchain_to_ln("w-lnd", 100_000, api)
     )
     assert pick_called, (
         "btclnd wallets must reach pick_best_channel_partners — they "

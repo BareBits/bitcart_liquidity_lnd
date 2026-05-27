@@ -140,11 +140,22 @@ class TestBtcToSats:
         assert cf.btc_to_sats(0.00000001) == 1
 
     def test_fractional_btc_truncates(self):
-        """The impl returns `int(btc * 100000000)`. Python's int()
-        truncates toward zero. For 0.000000005 BTC = 0.5 sats, we
-        expect 0 (truncation), not 1 (round). Pin this so a future
-        switch to `round()` is intentional."""
+        """The impl Decimal-multiplies and then `int()`-truncates
+        toward zero. For 0.000000005 BTC = 0.5 sats, we expect 0
+        (truncation), not 1 (round). Pin this so a future switch to
+        `round()` is intentional."""
         assert cf.btc_to_sats(0.000000005) == 0
+
+    def test_decimal_route_no_float_loss(self):
+        """Regression: `int(0.29 * 1e8)` returns 28_999_999 due to binary
+        float rounding; the Decimal route returns 29_000_000. Same for
+        2.675 BTC. Both numbers are sat-aligned (29M and 267.5M sats)
+        and must round-trip cleanly through btc_to_sats — including
+        when the input is a string (Electrum returns BTC-as-string)."""
+        assert cf.btc_to_sats(0.29) == 29_000_000
+        assert cf.btc_to_sats(2.675) == 267_500_000
+        assert cf.btc_to_sats("0.29") == 29_000_000
+        assert cf.btc_to_sats("2.675") == 267_500_000
 
     def test_large_value(self):
         """21M BTC supply ceiling — confirm we can represent it."""

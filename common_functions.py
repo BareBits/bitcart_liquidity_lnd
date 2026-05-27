@@ -2,6 +2,7 @@
 from typing import List,Dict,Tuple,Iterable,Any,Set
 import datetime
 import math
+from decimal import Decimal
 
 
 def utcnow_naive() -> datetime.datetime:
@@ -42,8 +43,11 @@ def sats_to_btc(sats:int)->float:
     return sats/100000000
 
 
-def btc_to_sats(btc:float)->int:
-    return int(btc*100000000)
+def btc_to_sats(btc) -> int:
+    # Decimal route to avoid binary-float rounding: int(0.29 * 1e8) ==
+    # 28_999_999, not 29_000_000. Decimal(str(...)) handles int, float,
+    # str, and Decimal inputs uniformly.
+    return int(Decimal(str(btc)) * 100_000_000)
 def sats_to_max_channel_size(sats:int):
     """
     Given a number of sats, what is the biggest single channel we can create?
