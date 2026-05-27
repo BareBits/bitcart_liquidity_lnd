@@ -265,6 +265,47 @@ def test_dashboard_fees_due_zero_when_no_revenue(monkeypatch):
     assert store.hosting_fees_due.sats == 0
 
 
+def test_dashboard_net_fees_pct_of_revenue(monkeypatch):
+    """net_fees_pct = net_fees_paid / revenue, exposed alongside the
+    existing developer_fee_pct / hosting_fee_pct so the UI can show a
+    "net fees X% of revenue" annotation. None when revenue is 0."""
+    import importlib, config
+    importlib.reload(config)
+    monkeypatch.setattr(config, "FEE_AMOUNT", 0.02, raising=False)
+
+    api = FakeBitcartAPI()
+    api.add_wallet("w1", name="liquidityhelper")
+    api.add_store("s1", wallets=["w1"], created="2025-01-01")
+    api.add_invoice("s1", payments=[{
+        "amount": "0.001", "currency": "btc", "symbol": "BTC", "lightning": True,
+        "wallet_id": "w1", "is_used": True, "created": "2026-01-01T00:00:00",
+    }])
+    _setup_engine_dispatch(monkeypatch, api)
+
+    payload = _run(dashboard_mod.compute_dashboard(api, "all"))
+    store = payload.stores[0]
+    # Revenue 100k sats; no actual fees paid in this fixture path, so
+    # net_fees_pct == 0.0 (a real ratio, not None — revenue is non-zero).
+    assert store.revenue.sats == 100_000
+    assert store.net_fees_paid.sats == 0
+    assert store.net_fees_pct == 0.0
+
+
+def test_dashboard_net_fees_pct_none_when_revenue_zero(monkeypatch):
+    """net_fees_pct must be None (renders as '—') when revenue is 0,
+    mirroring the existing developer_fee_pct / hosting_fee_pct
+    invariant. Pin against a regression where the UI renders 'NaN%'."""
+    api = FakeBitcartAPI()
+    api.add_wallet("w1", name="liquidityhelper")
+    api.add_store("s1", wallets=["w1"], created="2025-01-01")
+    _setup_engine_dispatch(monkeypatch, api)
+
+    payload = _run(dashboard_mod.compute_dashboard(api, "all"))
+    store = payload.stores[0]
+    assert store.revenue.sats == 0
+    assert store.net_fees_pct is None
+
+
 def test_dashboard_summary_sums_fees_due_across_stores(monkeypatch):
     """Multi-store dashboard: summary.developer_fees_due and
     summary.hosting_fees_due are the sum of per-store dues. Mirrors the

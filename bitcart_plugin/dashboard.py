@@ -123,6 +123,7 @@ class StoreDashboard(BaseModel):
     network_fee_breakdown: FeeBreakdown
     amount_saved_vs_cc: _Money           # CC_BASELINE_PCT*revenue - total fees paid
     net_fees_paid: _Money                # dev + hosting + network
+    net_fees_pct: Optional[float]        # net_fees_paid / revenue; None if revenue==0
     pie_slices: Dict[str, int]           # 3-slice pie: {dev, hosting, network} in sats
     inbound_liquidity: _Money            # sum of remote_balance for active channels
     active_channel_count: int
@@ -141,6 +142,7 @@ class SummaryDashboard(BaseModel):
     network_fee_breakdown: FeeBreakdown
     amount_saved_vs_cc: _Money
     net_fees_paid: _Money
+    net_fees_pct: Optional[float]
     pie_slices: Dict[str, int]
 
 
@@ -981,6 +983,7 @@ async def compute_dashboard(api: Any, range_key: str) -> DashboardResponse:
             network_fee_breakdown=breakdown,
             amount_saved_vs_cc=_money(amount_saved_sats, btc_usd_rate),
             net_fees_paid=_money(net_fees_sats, btc_usd_rate),
+            net_fees_pct=_safe_pct(net_fees_sats, revenue_sats),
             pie_slices={
                 "developer": dev_sats,
                 "hosting": hosting_sats,
@@ -1017,6 +1020,7 @@ async def compute_dashboard(api: Any, range_key: str) -> DashboardResponse:
             network_fee_breakdown=summary_breakdown,
             amount_saved_vs_cc=_money(summary_saved, btc_usd_rate),
             net_fees_paid=_money(summary_net, btc_usd_rate),
+            net_fees_pct=_safe_pct(summary_net, sum_revenue_sats),
             pie_slices={
                 "developer": sum_dev_sats,
                 "hosting": sum_hosting_sats,

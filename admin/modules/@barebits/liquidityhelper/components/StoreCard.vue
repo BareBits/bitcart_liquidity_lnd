@@ -89,11 +89,16 @@
           </div>
 
           <!-- Net fees paid — bolded to draw the eye to the summary
-               line under the breakdown. -->
+               line under the breakdown. The pct-of-revenue annotation
+               is what operators glance at to decide whether the fee
+               policy is in the right ballpark for their volume. -->
           <div class="kv-row total net-fees">
             <span class="kv-label">Net fees paid (dev + hosting + network):</span>
             <span class="kv-value">
               {{ formatBtcSats(store.net_fees_paid) }} / {{ formatUsd(store.net_fees_paid) }}
+              <span class="kv-meta">
+                ({{ formatPct(store.net_fees_pct) }} of revenue)
+              </span>
             </span>
           </div>
 
