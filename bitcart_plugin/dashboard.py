@@ -93,6 +93,13 @@ class FeeBreakdown(BaseModel):
     onchain_swaps: int
     onchain_lsp_orders: int
     lsp_service_fees: int
+    # Miner fees for outgoing on-chain txs that weren't initiated by an
+    # engine-labeled path (operator manual sends via Bitcart UI /
+    # `lncli sendcoins`, LND anchor sweeps, etc.). Real fees the wallet
+    # paid — included in network_fees_total — but bucketed separately
+    # so the breakdown row reads "external/manual" instead of being
+    # silently lumped under channel opens.
+    onchain_external: int
     ln_payouts: int
     ln_fee_payments: int
     ln_referral_payments: int
@@ -296,6 +303,13 @@ class DashboardResponse(BaseModel):
     range: str
     btc_usd_rate: Optional[float]
     cc_baseline_pct: float
+    # Bitcoin network the liquidityhelper wallets are on. Used by the
+    # UI to construct mempool.space URLs with the right network prefix
+    # (e.g. mempool.space/testnet4/tx/<txid>). One of:
+    #   "mainnet" | "testnet" | "testnet4" | "signet" | "regtest" | ""
+    # Empty string means we couldn't determine — UI then renders
+    # txids/addresses as plain text without a link.
+    bitcoin_network: str
     stores: List[StoreDashboard]
     summary: Optional[SummaryDashboard]    # None when only one store
     shared_wallet_warning: bool            # True if ≥2 stores share a wallet
@@ -674,6 +688,46 @@ async def list_recent_cashouts(
     )
 
 
+async def _detect_bitcoin_network(api: Any) -> str:
+    """Best-effort detection of the Bitcoin network the liquidityhelper
+    wallets are on. Walks wallets in get_wallets order, returns the
+    first network found from a btclnd wallet via api.get_lnd_info; for
+    Electrum-only deployments falls back to "". Empty string signals
+    "unknown" to the UI, which then renders txids/addresses as plain
+    text without a mempool.space link.
+
+    Normalizes 'testnet3' → 'testnet' to match the LSP-network
+    convention; preserves 'testnet4', 'signet', 'regtest', 'mainnet'
+    as-is so the UI can pick the right mempool subdomain.
+    """
+    try:
+        wallets = await api.get_wallets() or []
+    except Exception as e:
+        logger.warning(f"_detect_bitcoin_network: get_wallets failed: {e} {traceback.format_exc()}")
+        return ""
+    for w in wallets:
+        if w.get("name") != "liquidityhelper":
+            continue
+        if w.get("currency") != "btclnd":
+            continue
+        try:
+            info = await api.get_lnd_info(w["id"])
+        except Exception as e:
+            logger.warning(
+                f"_detect_bitcoin_network: get_lnd_info failed for "
+                f"wallet {w.get('id')}: {e} {traceback.format_exc()}"
+            )
+            continue
+        if not info:
+            continue
+        raw = (info.get("network") or "").lower()
+        if raw == "testnet3":
+            return "testnet"
+        if raw in ("mainnet", "testnet", "testnet4", "signet", "regtest"):
+            return raw
+    return ""
+
+
 def _liquidity_mode_label() -> str:
     """Human-readable label for the current liquidity-management mode.
 
@@ -754,9 +808,12 @@ def _label_to_network_fee_category(label: str) -> Optional[str]:
     """Map a tx/payment label to the user-visible network-fee category.
 
     Categories surface what KIND of payment incurred the fee, not the
-    fee itself. None means "ignore this row" — either the label is
-    unrecognized or the tx isn't one we want in this table (e.g. an
-    incoming customer payment with no label).
+    fee itself. None means "ignore this row" entirely — used for LN
+    payments with no label that have a positive (incoming) amount or
+    no associated fee. For outgoing on-chain transactions we always
+    return a category so every fee-incurring tx is accounted for; an
+    `'external'` or blank label maps to "external_send" (operator-
+    initiated manual sends, anchor sweeps, etc.).
     """
     try:
         import config as _cfg
@@ -764,8 +821,6 @@ def _label_to_network_fee_category(label: str) -> Optional[str]:
         logger.warning(f"_label_to_network_fee_category: config import failed: {e} {traceback.format_exc()}")
         return None
     name = (label or "").strip()
-    if not name:
-        return None
     # Labels of the form `<base>:<suffix>` carry an inline payload
     # (peer pubkey, lsp order id, …). Match on the base.
     base = name.partition(":")[0]
@@ -778,7 +833,13 @@ def _label_to_network_fee_category(label: str) -> Optional[str]:
         "CLOSE CHANNEL": "channel_close",
         "lsp_channel_order": "lsp_order",
     }
-    return mapping.get(base)
+    if base in mapping:
+        return mapping[base]
+    # Fallback: any other label (including the common LND `'external'`
+    # and blank labels) is an external/manual outgoing tx. Bucket it
+    # so the Recent network fees table sums to the dashboard's
+    # network_fees_total instead of silently dropping these rows.
+    return "external_send"
 
 
 async def list_recent_network_fees(
@@ -1032,6 +1093,7 @@ def _network_breakdown_from_stats(stats: Any) -> FeeBreakdown:
         onchain_swaps=g("onchain_network_fees_paid_for_swaps_in_sats"),
         onchain_lsp_orders=g("onchain_network_fees_paid_for_lsp_orders_in_sats"),
         lsp_service_fees=g("onchain_lsp_service_fees_paid_in_sats"),
+        onchain_external=g("onchain_network_fees_paid_for_external_in_sats"),
         ln_payouts=g("ln_network_fees_paid_for_payouts_in_sats"),
         ln_fee_payments=g("ln_network_fees_paid_for_fee_payments_in_sats"),
         ln_referral_payments=g("ln_network_fees_paid_for_referral_payments_in_sats"),
@@ -1044,6 +1106,7 @@ def _sum_breakdown(b: FeeBreakdown) -> int:
         b.onchain_payouts + b.onchain_fee_payments + b.onchain_referral_payments
         + b.onchain_topup_returns + b.onchain_channel_opens + b.onchain_channel_closes
         + b.onchain_swaps + b.onchain_lsp_orders + b.lsp_service_fees
+        + b.onchain_external
         + b.ln_payouts + b.ln_fee_payments + b.ln_referral_payments + b.ln_misc
     )
 
@@ -1060,6 +1123,7 @@ def _add_breakdowns(a: FeeBreakdown, b: FeeBreakdown) -> FeeBreakdown:
         onchain_swaps=a.onchain_swaps + b.onchain_swaps,
         onchain_lsp_orders=a.onchain_lsp_orders + b.onchain_lsp_orders,
         lsp_service_fees=a.lsp_service_fees + b.lsp_service_fees,
+        onchain_external=a.onchain_external + b.onchain_external,
         ln_payouts=a.ln_payouts + b.ln_payouts,
         ln_fee_payments=a.ln_fee_payments + b.ln_fee_payments,
         ln_referral_payments=a.ln_referral_payments + b.ln_referral_payments,
@@ -1168,6 +1232,7 @@ async def compute_dashboard(api: Any, range_key: str) -> DashboardResponse:
         onchain_payouts=0, onchain_fee_payments=0, onchain_referral_payments=0,
         onchain_topup_returns=0, onchain_channel_opens=0, onchain_channel_closes=0,
         onchain_swaps=0, onchain_lsp_orders=0, lsp_service_fees=0,
+        onchain_external=0,
         ln_payouts=0, ln_fee_payments=0, ln_referral_payments=0, ln_misc=0,
     )
     sum_revenue_sats = 0
@@ -1330,6 +1395,7 @@ async def compute_dashboard(api: Any, range_key: str) -> DashboardResponse:
     recent_lsp_orders = list_recent_lsp_orders(btc_usd_rate)
     recent_network_fees = await list_recent_network_fees(api, btc_usd_rate)
     liquidity_stats = await build_liquidity_stats(api, btc_usd_rate)
+    bitcoin_network = await _detect_bitcoin_network(api)
 
     # Health audit: pure-config checks (cashout/channel/reserve/loop
     # config sanity) + one dynamic check (LN cashouts stale while LN
@@ -1347,6 +1413,7 @@ async def compute_dashboard(api: Any, range_key: str) -> DashboardResponse:
         range=range_key,
         btc_usd_rate=btc_usd_rate,
         cc_baseline_pct=CREDIT_CARD_BASELINE_PCT,
+        bitcoin_network=bitcoin_network,
         stores=stores_out,
         summary=summary,
         shared_wallet_warning=shared_wallet_warning,

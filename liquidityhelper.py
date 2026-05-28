@@ -1889,6 +1889,7 @@ async def new_calc_invoice_stats(
             total_referral_fees_paid_in_sats=0,
             ln_network_fees_paid_for_referral_payments_in_sats=0,
             onchain_network_fees_paid_for_referral_payments_in_sats=0,
+            onchain_network_fees_paid_for_external_in_sats=0,
             misc_ln_network_fees_in_sats=0,
         )
         full_wallet=await api.get_best_ln_wallet_for_store(store)
@@ -2120,8 +2121,23 @@ async def new_calc_invoice_stats(
             elif transaction['incoming']==True:
                 continue
             else:
-                store_stats.onchain_network_fees_paid_for_channel_opens_in_sats+=abs(float(transaction['fee_sat']))
-                logger.warning(f'Unhandled transaction: {transaction}') # Note: unhandled tx kinds (including LND anchor-output sweeps) are bucketed into channel-open fees as a conservative fallback. The per-bucket dashboard numbers should be read as 'channel-open + unclassified miscellany' for that line.
+                # Outgoing tx not initiated by an engine-labeled path
+                # (operator manual send via Bitcart UI / lncli sendcoins,
+                # LND anchor sweep, etc.). LND labels these `'external'`
+                # or leaves them blank. The fee is still real money the
+                # wallet paid, so it counts toward fee totals — but it
+                # belongs in its own bucket, not lumped with channel
+                # opens (which conflated the dashboard's per-category
+                # breakdown).
+                store_stats.onchain_network_fees_paid_for_external_in_sats += abs(float(transaction['fee_sat']))
+                norm_label = (transaction.get('label') or '').strip().lower()
+                if norm_label not in ('', 'external'):
+                    # Genuinely unknown label — keep the warning so a
+                    # new tx type we should explicitly handle still
+                    # surfaces in the operational log. `'external'` and
+                    # blank labels are the common case and don't need
+                    # to spam the log every tick.
+                    logger.warning(f'Unhandled transaction: {transaction}')
         # Get LN history + fees
         ln_history_rows = await list_ln_payments_with_labels(
             wallet=full_wallet, api=api,

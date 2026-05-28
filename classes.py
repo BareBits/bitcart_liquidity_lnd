@@ -123,6 +123,15 @@ class StoreStats:
     # treatment as the LN-side fee: deducted from the developer's 2%
     # rather than from the flat referral fee.
     onchain_network_fees_paid_for_referral_payments_in_sats: int
+    # Miner fee for outgoing on-chain txs that weren't initiated by an
+    # engine-labeled path — operator-initiated sends via the Bitcart
+    # admin UI / lncli sendcoins, LND anchor sweeps, and anything else
+    # the wallet broadcast without one of the known application labels.
+    # LND tags these `label='external'` (or leaves them blank). The
+    # operator paid them, so they belong in the fee total; bucketed
+    # separately so the dashboard breakdown doesn't mislabel them as
+    # channel-open miner fees.
+    onchain_network_fees_paid_for_external_in_sats: int = 0
     def calc_total_bb_fees_paid_in_sats(self,include_onchain_network_fees:bool,include_ln_network_fees:bool)->int:
         if not include_onchain_network_fees and not include_ln_network_fees:
             return self.total_bb_fees_paid_in_sats
@@ -156,7 +165,14 @@ class StoreStats:
                     # On-chain miner fee for the fallback referral
                     # delivery. Same policy as the LN-side referral
                     # fee: distributor doesn't eat delivery costs.
-                    self.onchain_network_fees_paid_for_referral_payments_in_sats
+                    self.onchain_network_fees_paid_for_referral_payments_in_sats +
+                    # Miner fee for outgoing txs not initiated by an
+                    # engine-labeled path (operator manual sends,
+                    # anchor sweeps, etc.). Real fee the wallet paid;
+                    # counts against the 2% cap so the operator isn't
+                    # over-charged when external sends consume fees
+                    # the engine would otherwise have credited.
+                    self.onchain_network_fees_paid_for_external_in_sats
             )
         return base_fee
     def calc_total_eligible_revenue_in_sats(self)->int:

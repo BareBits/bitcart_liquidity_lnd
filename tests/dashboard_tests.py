@@ -796,6 +796,198 @@ def test_recent_network_fees_picks_up_lsp_order(monkeypatch):
     assert row.txid == "33" * 32
 
 
+def test_dashboard_bitcoin_network_from_lnd_info(monkeypatch):
+    """bitcoin_network is populated from the first btclnd liquidityhelper
+    wallet's GetInfo. Used by the UI to construct mempool.space URLs
+    with the right network prefix."""
+    api = FakeBitcartAPI()
+    api.add_wallet("w1", name="liquidityhelper", currency="btclnd")
+    api.add_store("s1", wallets=["w1"], created="2025-01-01")
+    async def fake_get_lnd_info(wallet_id):
+        return {"network": "regtest"}
+    api.get_lnd_info = fake_get_lnd_info
+    _setup_engine_dispatch(monkeypatch, api)
+
+    payload = _run(dashboard_mod.compute_dashboard(api, "all"))
+    assert payload.bitcoin_network == "regtest"
+
+
+def test_dashboard_bitcoin_network_normalizes_testnet3(monkeypatch):
+    """LND reports 'testnet3' but the UI/LSP convention is just
+    'testnet'. The dashboard normalizes so the UI doesn't need to
+    know about both spellings."""
+    api = FakeBitcartAPI()
+    api.add_wallet("w1", name="liquidityhelper", currency="btclnd")
+    api.add_store("s1", wallets=["w1"], created="2025-01-01")
+    async def fake_get_lnd_info(wallet_id):
+        return {"network": "testnet3"}
+    api.get_lnd_info = fake_get_lnd_info
+    _setup_engine_dispatch(monkeypatch, api)
+
+    payload = _run(dashboard_mod.compute_dashboard(api, "all"))
+    assert payload.bitcoin_network == "testnet"
+
+
+def test_dashboard_bitcoin_network_preserves_testnet4(monkeypatch):
+    """testnet4 stays as 'testnet4' (it gets its own mempool subdomain;
+    the UI needs to distinguish it from testnet3)."""
+    api = FakeBitcartAPI()
+    api.add_wallet("w1", name="liquidityhelper", currency="btclnd")
+    api.add_store("s1", wallets=["w1"], created="2025-01-01")
+    async def fake_get_lnd_info(wallet_id):
+        return {"network": "testnet4"}
+    api.get_lnd_info = fake_get_lnd_info
+    _setup_engine_dispatch(monkeypatch, api)
+
+    payload = _run(dashboard_mod.compute_dashboard(api, "all"))
+    assert payload.bitcoin_network == "testnet4"
+
+
+def test_dashboard_bitcoin_network_empty_for_electrum_only(monkeypatch):
+    """Electrum (btc) wallets don't expose network via the same path —
+    we fall back to '' so the UI renders txids/addresses as plain text
+    (no mempool link)."""
+    api = FakeBitcartAPI()
+    api.add_wallet("w1", name="liquidityhelper", currency="btc")
+    api.add_store("s1", wallets=["w1"], created="2025-01-01")
+    _setup_engine_dispatch(monkeypatch, api)
+
+    payload = _run(dashboard_mod.compute_dashboard(api, "all"))
+    assert payload.bitcoin_network == ""
+
+
+def test_recent_network_fees_external_label_surfaces_as_external_send(monkeypatch):
+    """An outgoing on-chain tx labeled 'external' (LND's default for
+    operator-initiated sends not tagged via LabelTransaction) must
+    appear in the Recent network fees table with category=external_send.
+
+    Pin against the prior behavior where 'external' fell through the
+    whitelist and was silently dropped from the table even though the
+    fee WAS being counted in network_fees_total — operator saw a
+    mysterious gap between the total and the table sum."""
+    api = FakeBitcartAPI()
+    api.add_wallet("w1", name="liquidityhelper")
+    api.add_store("s1", wallets=["w1"], created="2025-01-01")
+    api.add_onchain_tx(
+        "w1", label="external",
+        amount_sat=-2435, fee_sat=1430,
+        txid="ee" * 32, timestamp=1700000000,
+        dest_address="bcrt1qzzedazutc0h4gp3xc9k3mqr3et9p8hxfx3r2g7",
+    )
+    _setup_engine_dispatch(monkeypatch, api)
+
+    payload = _run(dashboard_mod.compute_dashboard(api, "all"))
+    assert len(payload.recent_network_fees) == 1
+    row = payload.recent_network_fees[0]
+    assert row.category == "external_send"
+    assert row.fee_sats == 1430
+    assert row.method == "onchain"
+    assert row.txid == "ee" * 32
+
+
+def test_recent_network_fees_external_ln_payment_surfaces_as_external_send(monkeypatch):
+    """An outgoing LN payment with an unrecognized label and a non-zero
+    routing fee surfaces in the Recent network fees table with
+    category=external_send. Mirrors the on-chain behavior so the
+    table sums to network_fees_total regardless of which rail the
+    fee was paid on.
+
+    The same payment ALSO contributes to network_fees_total via the
+    pre-existing misc_ln_network_fees_in_sats bucket → ln_misc."""
+    api = FakeBitcartAPI()
+    api.add_wallet("w1", name="liquidityhelper")
+    api.add_store("s1", wallets=["w1"], created="2025-01-01")
+    api.add_ln_tx(
+        "w1", label="some-test-payment",   # not an engine label
+        amount_msat=-3_000_000,    # 3000 sats outgoing
+        fee_msat=15_000,           # 15 sats routing fee
+        payment_hash="cafe1234", timestamp=1700001234,
+    )
+    _setup_engine_dispatch(monkeypatch, api)
+
+    payload = _run(dashboard_mod.compute_dashboard(api, "all"))
+    # In the recent table
+    rows = [r for r in payload.recent_network_fees if r.payment_hash == "cafe1234"]
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.category == "external_send"
+    assert row.fee_sats == 15
+    assert row.method == "lightning"
+    # And in the dashboard total (via the pre-existing ln_misc bucket).
+    assert payload.stores[0].network_fee_breakdown.ln_misc == 15
+    assert payload.stores[0].network_fees_total.sats == 15
+
+
+def test_recent_network_fees_empty_label_surfaces_as_external_send(monkeypatch):
+    """Blank/missing label also routes to external_send — LND sometimes
+    omits the label field entirely for txs not initiated through
+    SendCoinsRequest."""
+    api = FakeBitcartAPI()
+    api.add_wallet("w1", name="liquidityhelper")
+    api.add_store("s1", wallets=["w1"], created="2025-01-01")
+    api.add_onchain_tx(
+        "w1", label="",
+        amount_sat=-1000, fee_sat=250,
+        txid="ff" * 32, timestamp=1700000100,
+    )
+    _setup_engine_dispatch(monkeypatch, api)
+
+    payload = _run(dashboard_mod.compute_dashboard(api, "all"))
+    assert len(payload.recent_network_fees) == 1
+    assert payload.recent_network_fees[0].category == "external_send"
+
+
+def test_external_send_contributes_to_network_fees_total_via_new_bucket(monkeypatch):
+    """An 'external' on-chain tx must:
+      - increment onchain_external in the breakdown (NOT
+        onchain_channel_opens — that conflation was the original bug)
+      - count toward network_fees_total
+      - appear in recent_network_fees
+    All three numbers must reconcile."""
+    api = FakeBitcartAPI()
+    api.add_wallet("w1", name="liquidityhelper")
+    api.add_store("s1", wallets=["w1"], created="2025-01-01")
+    api.add_onchain_tx(
+        "w1", label="external",
+        amount_sat=-2435, fee_sat=1430,
+        txid="dd" * 32, timestamp=1700000000,
+    )
+    _setup_engine_dispatch(monkeypatch, api)
+
+    payload = _run(dashboard_mod.compute_dashboard(api, "all"))
+    store = payload.stores[0]
+    # New bucket gets the fee — not the channel_opens bucket.
+    assert store.network_fee_breakdown.onchain_external == 1430
+    assert store.network_fee_breakdown.onchain_channel_opens == 0
+    # Total still includes it (network_fees_total is a sum of all
+    # buckets, including the new one).
+    assert store.network_fees_total.sats == 1430
+    # And it appears in the recent-network-fees table.
+    table_fee_sum = sum(r.fee_sats for r in payload.recent_network_fees)
+    assert table_fee_sum == 1430, (
+        "table sum must reconcile with network_fees_total"
+    )
+
+
+def test_external_breakdown_summary_aggregates(monkeypatch):
+    """Multi-store: onchain_external in the summary breakdown is the
+    sum across stores."""
+    api = FakeBitcartAPI()
+    api.add_wallet("w-A", name="liquidityhelper")
+    api.add_wallet("w-B", name="liquidityhelper")
+    api.add_store("s-A", wallets=["w-A"], created="2025-01-01")
+    api.add_store("s-B", wallets=["w-B"], created="2025-01-01")
+    api.add_onchain_tx("w-A", label="external",
+        amount_sat=-1000, fee_sat=500, txid="aa" * 32, timestamp=1700000000)
+    api.add_onchain_tx("w-B", label="external",
+        amount_sat=-2000, fee_sat=700, txid="bb" * 32, timestamp=1700000100)
+    _setup_engine_dispatch(monkeypatch, api)
+
+    payload = _run(dashboard_mod.compute_dashboard(api, "all"))
+    assert payload.summary is not None
+    assert payload.summary.network_fee_breakdown.onchain_external == 1200
+
+
 def test_recent_network_fees_skips_zero_fee_rows(monkeypatch):
     """A tx with fee_sat==0 (or fee_msat==0) is NOT emitted — this
     table only surfaces actual network-fee events. Pins against a

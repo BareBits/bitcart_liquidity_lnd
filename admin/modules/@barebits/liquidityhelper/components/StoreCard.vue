@@ -266,6 +266,7 @@ export default {
         ["onchain_swaps",              "On-chain swap miner fees"],
         ["onchain_lsp_orders",         "On-chain LSP order miner fees"],
         ["lsp_service_fees",           "LSP service fees (channel rental)"],
+        ["onchain_external",           "On-chain external / manual send miner fees"],
         ["ln_payouts",                 "Lightning payout fees"],
         ["ln_fee_payments",            "Lightning dev-fee payment fees"],
         ["ln_referral_payments",       "Lightning hosting-fee payment fees"],

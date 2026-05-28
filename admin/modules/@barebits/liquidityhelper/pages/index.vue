@@ -310,14 +310,29 @@
                       <v-icon small>{{ item.method === 'lightning' ? 'mdi-flash' : 'mdi-link' }}</v-icon>
                       {{ item.method === 'lightning' ? 'LN' : 'on-chain' }}
                     </template>
+                    <template #item.destination="{ item }">
+                      <a
+                        v-if="isBitcoinAddress(item.destination) && mempoolAddrUrl(item.destination)"
+                        :href="mempoolAddrUrl(item.destination)"
+                        target="_blank" rel="noopener noreferrer"
+                        class="text-caption"
+                      >{{ shortAddr(item.destination) }}</a>
+                      <span v-else-if="isBitcoinAddress(item.destination)" class="text-caption">
+                        {{ shortAddr(item.destination) }}
+                      </span>
+                      <span v-else class="text-caption">{{ item.destination }}</span>
+                    </template>
                     <template #item.txid="{ item }">
                       <a
-                        v-if="item.txid"
-                        :href="'https://mempool.space/tx/' + item.txid"
+                        v-if="item.txid && mempoolTxUrl(item.txid)"
+                        :href="mempoolTxUrl(item.txid)"
                         target="_blank"
                         rel="noopener noreferrer"
                         class="text-caption"
                       >{{ shortTxid(item.txid) }}</a>
+                      <span v-else-if="item.txid" class="text-caption">
+                        {{ shortTxid(item.txid) }}
+                      </span>
                       <span v-else-if="item.payment_hash" class="text-caption grey--text">
                         {{ shortTxid(item.payment_hash) }} (LN)
                       </span>
@@ -366,14 +381,29 @@
                       <v-icon small>{{ item.method === 'lightning' ? 'mdi-flash' : 'mdi-link' }}</v-icon>
                       {{ item.method === 'lightning' ? 'LN' : 'on-chain' }}
                     </template>
+                    <template #item.destination="{ item }">
+                      <a
+                        v-if="isBitcoinAddress(item.destination) && mempoolAddrUrl(item.destination)"
+                        :href="mempoolAddrUrl(item.destination)"
+                        target="_blank" rel="noopener noreferrer"
+                        class="text-caption"
+                      >{{ shortAddr(item.destination) }}</a>
+                      <span v-else-if="isBitcoinAddress(item.destination)" class="text-caption">
+                        {{ shortAddr(item.destination) }}
+                      </span>
+                      <span v-else class="text-caption">{{ item.destination }}</span>
+                    </template>
                     <template #item.txid="{ item }">
                       <a
-                        v-if="item.txid"
-                        :href="'https://mempool.space/tx/' + item.txid"
+                        v-if="item.txid && mempoolTxUrl(item.txid)"
+                        :href="mempoolTxUrl(item.txid)"
                         target="_blank"
                         rel="noopener noreferrer"
                         class="text-caption"
                       >{{ shortTxid(item.txid) }}</a>
+                      <span v-else-if="item.txid" class="text-caption">
+                        {{ shortTxid(item.txid) }}
+                      </span>
                       <span v-else-if="item.payment_hash" class="text-caption grey--text">
                         {{ shortTxid(item.payment_hash) }} (LN)
                       </span>
@@ -524,20 +554,26 @@
                     </template>
                     <template #item.channel_funding_txid="{ item }">
                       <a
-                        v-if="item.channel_funding_txid"
-                        :href="'https://mempool.space/tx/' + item.channel_funding_txid"
+                        v-if="item.channel_funding_txid && mempoolTxUrl(item.channel_funding_txid)"
+                        :href="mempoolTxUrl(item.channel_funding_txid)"
                         target="_blank" rel="noopener"
                         class="text-caption"
                       >{{ shortTxid(item.channel_funding_txid) }}</a>
+                      <span v-else-if="item.channel_funding_txid" class="text-caption">
+                        {{ shortTxid(item.channel_funding_txid) }}
+                      </span>
                       <span v-else class="text-caption text--disabled">—</span>
                     </template>
                     <template #item.refund_txid="{ item }">
                       <a
-                        v-if="item.refund_txid"
-                        :href="'https://mempool.space/tx/' + item.refund_txid"
+                        v-if="item.refund_txid && mempoolTxUrl(item.refund_txid)"
+                        :href="mempoolTxUrl(item.refund_txid)"
                         target="_blank" rel="noopener"
                         class="text-caption"
                       >{{ shortTxid(item.refund_txid) }}</a>
+                      <span v-else-if="item.refund_txid" class="text-caption">
+                        {{ shortTxid(item.refund_txid) }}
+                      </span>
                       <span v-else class="text-caption text--disabled">—</span>
                     </template>
                   </v-data-table>
@@ -587,14 +623,29 @@
                       <v-icon small>{{ item.method === 'lightning' ? 'mdi-flash' : 'mdi-link' }}</v-icon>
                       {{ item.method === 'lightning' ? 'LN' : 'on-chain' }}
                     </template>
+                    <template #item.destination="{ item }">
+                      <a
+                        v-if="isBitcoinAddress(item.destination) && mempoolAddrUrl(item.destination)"
+                        :href="mempoolAddrUrl(item.destination)"
+                        target="_blank" rel="noopener noreferrer"
+                        class="text-caption"
+                      >{{ shortAddr(item.destination) }}</a>
+                      <span v-else-if="isBitcoinAddress(item.destination)" class="text-caption">
+                        {{ shortAddr(item.destination) }}
+                      </span>
+                      <span v-else class="text-caption">{{ item.destination }}</span>
+                    </template>
                     <template #item.txid="{ item }">
                       <a
-                        v-if="item.txid"
-                        :href="'https://mempool.space/tx/' + item.txid"
+                        v-if="item.txid && mempoolTxUrl(item.txid)"
+                        :href="mempoolTxUrl(item.txid)"
                         target="_blank"
                         rel="noopener noreferrer"
                         class="text-caption"
                       >{{ shortTxid(item.txid) }}</a>
+                      <span v-else-if="item.txid" class="text-caption">
+                        {{ shortTxid(item.txid) }}
+                      </span>
                       <span v-else-if="item.payment_hash" class="text-caption grey--text">
                         {{ shortTxid(item.payment_hash) }} (LN)
                       </span>
@@ -1086,6 +1137,59 @@ export default {
       if (id.length <= 20) return id
       return `${id.slice(0, 8)}…${id.slice(-8)}`
     },
+    // Bitcoin-address truncation. First 4 + … + last 4 — shorter than
+    // shortTxid because addresses are themselves shorter and we want
+    // them to fit inline next to the chip in the destination column.
+    shortAddr(addr) {
+      if (!addr) return ""
+      if (addr.length <= 12) return addr
+      return `${addr.slice(0, 4)}…${addr.slice(-4)}`
+    },
+    // mempool.space subdomain selector for the current network.
+    // mainnet uses the root domain; every other network uses a path
+    // prefix. regtest has no public explorer — we return null so
+    // callers render plain text.
+    //   "mainnet"  → "https://mempool.space"
+    //   "testnet"  → "https://mempool.space/testnet"
+    //   "testnet4" → "https://mempool.space/testnet4"
+    //   "signet"   → "https://mempool.space/signet"
+    //   "regtest"  → null
+    //   ""         → null (unknown network; render plain)
+    mempoolBase() {
+      const n = this.dashboard && this.dashboard.bitcoin_network
+      if (!n) return null
+      if (n === "mainnet") return "https://mempool.space"
+      if (n === "testnet") return "https://mempool.space/testnet"
+      if (n === "testnet4") return "https://mempool.space/testnet4"
+      if (n === "signet") return "https://mempool.space/signet"
+      // regtest and anything else: no public explorer.
+      return null
+    },
+    mempoolTxUrl(txid) {
+      const base = this.mempoolBase()
+      if (!base || !txid) return null
+      return `${base}/tx/${txid}`
+    },
+    mempoolAddrUrl(addr) {
+      const base = this.mempoolBase()
+      if (!base || !addr) return null
+      return `${base}/address/${addr}`
+    },
+    // Heuristic: is `s` a Bitcoin address (vs an LN address / pubkey /
+    // empty)? LN addresses contain '@' (user@domain), LN pubkeys are
+    // 66-char hex, on-chain addresses start with one of the standard
+    // prefixes. We're conservative — anything that doesn't clearly
+    // look like a Bitcoin address is rendered plain rather than risk
+    // building a bogus mempool URL.
+    isBitcoinAddress(s) {
+      if (!s || typeof s !== "string") return false
+      if (s.includes("@")) return false
+      if (/^[0-9a-f]{66}$/i.test(s)) return false   // LN pubkey
+      // Mainnet: 1.../3.../bc1...; testnet/signet: m.../n.../2.../tb1...;
+      // regtest: bcrt1... Taproot adds bc1p/tb1p/bcrt1p; we accept those
+      // via the prefix-segwit match.
+      return /^(bc1|tb1|bcrt1|[123mn])/.test(s)
+    },
     // Color for the fee_type chip in the payments tables.
     feeTypeColor(type) {
       if (type === "developer") return "primary"
@@ -1103,6 +1207,10 @@ export default {
       if (cat === "channel_open") return "info"
       if (cat === "channel_close") return "error"
       if (cat === "lsp_order") return "purple"
+      // external_send = outgoing tx not initiated by an engine-labeled
+      // path (operator manual send, anchor sweep, etc.) — neutral grey
+      // so it doesn't pull the eye like an engine-decision category.
+      if (cat === "external_send") return "grey"
       return "default"
     },
     // Parse close_reason into {category, reasons[]}. Engine format
