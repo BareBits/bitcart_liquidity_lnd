@@ -410,6 +410,32 @@ class LndPaymentLabel(BaseModel):
     label: str = CharField()
     created: datetime = DateTimeField(default=datetime.now)
 
+
+class Rebalance(BaseModel):
+    """One row per SUCCESSFUL circular rebalance. The engine fires
+    periodic self-payments to keep channel balances in motion (which
+    discourages peers from closing channels); this table tracks what
+    moved and what fee was paid.
+
+    Only successes land here — failed attempts are logged via
+    decisions.log + the operational log but not persisted. The
+    rebalance budget gate reads `sum(fee_sat)` per wallet to decide
+    whether today's allowance is exhausted, so persisting failures
+    would just dilute that math.
+
+    `payment_hash` is also written into LndPaymentLabel with
+    REBALANCE_REASON so the existing on-chain/LN history walkers
+    (new_calc_invoice_stats) can attribute the fees correctly into
+    `ln_network_fees_paid_for_rebalances_in_sats`.
+    """
+    payment_hash: str = CharField(unique=True, primary_key=True)  # hex, LOWERCASE
+    wallet_id: str = CharField(index=True)
+    date: datetime = DateTimeField(default=datetime.now, index=True)
+    amount_sat: int = BigIntegerField()
+    fee_sat: int = BigIntegerField()
+    out_channel_point: str = CharField()   # "txid:vout"
+    in_channel_point: str = CharField()    # "txid:vout"
+
 def dict_to_node(mydict:Dict[str,str])->Optional[LightningNode]:
     """
     Given a dict, make a lightning node. Does not save it, just creates it.
@@ -696,7 +722,7 @@ def audit_existing_peer(node:LightningNode)->Tuple[bool,List[str]]:
 node_db.connect()
 node_db.create_tables([
     LightningNode, LightningChannel, LndPaymentLabel,
-    SwapPriceQuote, LspPriceQuote, LspChannelOrder,
+    SwapPriceQuote, LspPriceQuote, LspChannelOrder, Rebalance,
 ])
 
 

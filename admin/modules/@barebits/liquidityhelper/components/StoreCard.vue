@@ -69,10 +69,19 @@
               <MoneyDisplay :money="store.network_fees_total" :unit="displayUnit" />
             </span>
           </div>
-          <!-- Indented breakdown — only shown for non-zero rows. -->
+          <!-- Indented breakdown — only shown for non-zero rows.
+               Rows can optionally carry a `tooltip` field; when
+               present, a small info-circle icon renders next to the
+               label with the tooltip text in its `title=` attribute. -->
           <div v-if="feeRows.length" class="fee-breakdown">
             <div v-for="row in feeRows" :key="row.key" class="kv-row indented">
-              <span class="kv-label">{{ row.label }}:</span>
+              <span class="kv-label">{{ row.label
+                }}<v-icon
+                  v-if="row.tooltip"
+                  x-small
+                  class="ml-1 fee-info-icon"
+                  :title="row.tooltip"
+                >mdi-information-outline</v-icon>:</span>
               <span class="kv-value">
                 <MoneyDisplay :money="{ sats: row.sats, btc: row.btc, usd: row.usd }" :unit="displayUnit" />
               </span>
@@ -253,6 +262,8 @@ export default {
     },
     feeRows() {
       const b = this.store.network_fee_breakdown || {}
+      // [key, label, optional tooltip]. Tooltip is rendered as an
+      // info-circle icon next to the label.
       const labels = [
         ["onchain_payouts",            "On-chain payout miner fees"],
         ["onchain_fee_payments",       "On-chain dev-fee payment miner fees"],
@@ -267,13 +278,20 @@ export default {
         ["ln_payouts",                 "Lightning payout fees"],
         ["ln_fee_payments",            "Lightning dev-fee payment fees"],
         ["ln_referral_payments",       "Lightning hosting-fee payment fees"],
+        ["ln_rebalances",              "Lightning rebalance routing fees",
+          "Routing fees paid to other LN nodes when the engine performs " +
+          "small circular rebalances. Rebalances quietly cycle sats between " +
+          "your channels to keep them in use, discouraging peers from closing " +
+          "them and maintaining inbound capacity for customer payments. The " +
+          "yearly budget is configurable on the Settings tab under Channel " +
+          "rebalancing."],
         ["ln_misc",                    "Lightning misc routing fees"],
       ]
       const rate = this.usdPerSat
-      return labels.map(([key, label]) => {
+      return labels.map(([key, label, tooltip]) => {
         const sats = Number(b[key] || 0)
         return {
-          key, label,
+          key, label, tooltip: tooltip || null,
           sats,
           btc: sats / 100000000,
           usd: rate !== null ? sats * rate : null,
@@ -417,4 +435,14 @@ export default {
 }
 .kv-balance.owed { color: #FFB300; }
 .kv-balance.overpaid { color: #4caf50; }
+
+/* Info-circle icon next to a fee-breakdown row label. Hover gives a
+   native tooltip via the title attribute. Muted color so the icon
+   doesn't compete with the actual fee values. */
+.fee-info-icon {
+  opacity: 0.6;
+  cursor: help;
+  vertical-align: baseline;
+}
+.fee-info-icon:hover { opacity: 1; }
 </style>

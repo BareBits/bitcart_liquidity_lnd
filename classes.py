@@ -132,6 +132,12 @@ class StoreStats:
     # separately so the dashboard breakdown doesn't mislabel them as
     # channel-open miner fees.
     onchain_network_fees_paid_for_external_in_sats: int = 0
+    # Routing fees paid on circular-rebalance self-payments. Counted
+    # toward the 2% developer-fee cap so the operator isn't double-
+    # charged when rebalancing eats into the fee budget. Sats received
+    # via a rebalance do NOT count as revenue (rebalance invoices
+    # bypass Bitcart's invoice store), only the fee is real cost.
+    ln_network_fees_paid_for_rebalances_in_sats: int = 0
     def calc_total_bb_fees_paid_in_sats(self,include_onchain_network_fees:bool,include_ln_network_fees:bool)->int:
         if not include_onchain_network_fees and not include_ln_network_fees:
             return self.total_bb_fees_paid_in_sats
@@ -144,7 +150,11 @@ class StoreStats:
                        # LN fee for sending the referral payment counts
                        # against the dev's 2% — the distributor isn't on
                        # the hook for the network cost of their delivery.
-                       self.ln_network_fees_paid_for_referral_payments_in_sats
+                       self.ln_network_fees_paid_for_referral_payments_in_sats +
+                       # Rebalance routing fees count alongside other
+                       # network fees so the operator isn't double-
+                       # charged when channel maintenance eats budget.
+                       self.ln_network_fees_paid_for_rebalances_in_sats
                        )
         if include_onchain_network_fees:
             base_fee+=(

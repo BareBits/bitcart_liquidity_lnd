@@ -103,6 +103,10 @@ class FeeBreakdown(BaseModel):
     ln_payouts: int
     ln_fee_payments: int
     ln_referral_payments: int
+    # Routing fees paid on circular-rebalance self-payments. Surfaced
+    # with its own row + tooltip so operators can see the
+    # channel-maintenance cost separately from real payouts.
+    ln_rebalances: int
     ln_misc: int
 
 
@@ -888,6 +892,7 @@ def _label_to_network_fee_category(label: str) -> Optional[str]:
         _cfg.REFERRAL_PAYOUT_REASON: "hosting_fee",
         _cfg.CASHOUT_REASON: "cashout",
         _cfg.CASHOUT_DIRECT_CHANNEL_REASON: "cashout",
+        getattr(_cfg, "REBALANCE_REASON", "lnhelper_rebalance"): "rebalance",
         "OPEN CHANNEL": "channel_open",
         "CLOSE CHANNEL": "channel_close",
         "lsp_channel_order": "lsp_order",
@@ -1156,6 +1161,7 @@ def _network_breakdown_from_stats(stats: Any) -> FeeBreakdown:
         ln_payouts=g("ln_network_fees_paid_for_payouts_in_sats"),
         ln_fee_payments=g("ln_network_fees_paid_for_fee_payments_in_sats"),
         ln_referral_payments=g("ln_network_fees_paid_for_referral_payments_in_sats"),
+        ln_rebalances=g("ln_network_fees_paid_for_rebalances_in_sats"),
         ln_misc=g("misc_ln_network_fees_in_sats"),
     )
 
@@ -1166,7 +1172,8 @@ def _sum_breakdown(b: FeeBreakdown) -> int:
         + b.onchain_topup_returns + b.onchain_channel_opens + b.onchain_channel_closes
         + b.onchain_swaps + b.onchain_lsp_orders + b.lsp_service_fees
         + b.onchain_external
-        + b.ln_payouts + b.ln_fee_payments + b.ln_referral_payments + b.ln_misc
+        + b.ln_payouts + b.ln_fee_payments + b.ln_referral_payments
+        + b.ln_rebalances + b.ln_misc
     )
 
 
@@ -1183,6 +1190,7 @@ def _add_breakdowns(a: FeeBreakdown, b: FeeBreakdown) -> FeeBreakdown:
         onchain_lsp_orders=a.onchain_lsp_orders + b.onchain_lsp_orders,
         lsp_service_fees=a.lsp_service_fees + b.lsp_service_fees,
         onchain_external=a.onchain_external + b.onchain_external,
+        ln_rebalances=a.ln_rebalances + b.ln_rebalances,
         ln_payouts=a.ln_payouts + b.ln_payouts,
         ln_fee_payments=a.ln_fee_payments + b.ln_fee_payments,
         ln_referral_payments=a.ln_referral_payments + b.ln_referral_payments,
@@ -1329,7 +1337,8 @@ async def compute_dashboard(api: Any, range_key: str) -> DashboardResponse:
         onchain_topup_returns=0, onchain_channel_opens=0, onchain_channel_closes=0,
         onchain_swaps=0, onchain_lsp_orders=0, lsp_service_fees=0,
         onchain_external=0,
-        ln_payouts=0, ln_fee_payments=0, ln_referral_payments=0, ln_misc=0,
+        ln_payouts=0, ln_fee_payments=0, ln_referral_payments=0,
+        ln_rebalances=0, ln_misc=0,
     )
     sum_revenue_sats = 0
     sum_dev_sats = 0

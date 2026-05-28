@@ -565,6 +565,50 @@ LN_PAYMENT_FEE_LIMIT_MIN_SAT: int = 50
 
 
 # =============================================================================
+# === Channel rebalancing ===
+# =============================================================================
+#
+# Periodic small circular rebalances that quietly cycle sats between
+# channels to keep them in use. The point is to discourage peers from
+# closing channels because they look idle / unbalanced — a tiny steady
+# drip of traffic signals "this channel is active." Also helps
+# maintain inbound capacity for customer payments by pushing sats out
+# of over-full channels into emptier ones.
+#
+# Each tick (before fee payment and cashouts) the engine checks
+# whether today's fee budget is still available and, if so, attempts
+# a self-payment from the most over-full channel through the LN graph
+# back into the most empty channel. The amount auto-adjusts via
+# binary-halving until the routing fee fits within the budget.
+#
+# Sats *received* via a rebalance do NOT count as revenue — rebalance
+# invoices are created via LND gRPC directly (not Bitcart's invoice
+# store), so they never enter the revenue-walk. Fees paid for
+# rebalances DO count as network fees and are credited toward the 2%
+# developer-fee cap (same treatment as cashout / fee-payment fees).
+
+# Yearly fee budget for automatic channel rebalancing. Daily allowance
+# = total / 365. Unused daily allowance rolls over (the engine tracks
+# the first-attempt date and computes available = daily × days_active
+# − total_fees_spent). 0 disables the rebalancer entirely.
+#
+# Default 3000 sats/year (~8.2 sats/day) is intentionally small —
+# the goal is "channel keep-alive" signaling, not active liquidity
+# management. Operators wanting more aggressive rebalancing should
+# raise this; tests show ~5-10× this for materially-frequent
+# rebalances on typical mainnet fee conditions.
+REBALANCE_YEARLY_BUDGET_SAT: int = 3000
+
+# Per-channel safety reserve in sats. The rebalancer will never push
+# a channel's local balance below this amount, and never attempt to
+# move less than this amount (HTLCs below this are likely dust and
+# won't route reliably). Doubles as the floor in the binary-halving
+# amount search — when the halving probe drops below this floor with
+# no viable fee, we move on to the next channel pair.
+REBALANCE_MIN_CHANNEL_BUFFER_SAT: int = 1000
+
+
+# =============================================================================
 # === Submarine swaps (LN → on-chain) ===
 # =============================================================================
 #
@@ -891,6 +935,13 @@ FEE_PAYOUT_REASON = "lnhelper_fee"
 
 # Transaction label for cashout payments. Same caveat as above.
 CASHOUT_REASON = "lnhelper_cashout"
+
+# Transaction label for circular-rebalance self-payments. Written to
+# LndPaymentLabel on every successful rebalance so the existing
+# `list_ln_payments_with_labels` walker sees the payment with this
+# label, and `new_calc_invoice_stats` can bucket the routing fee
+# into ln_network_fees_paid_for_rebalances_in_sats.
+REBALANCE_REASON = "lnhelper_rebalance"
 
 # Transaction label for direct-channel-push cashouts (the
 # PREFER_LN_CASHOUT + OWN_LIGHTNING_NODES path that opens a channel

@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from typing import Tuple, Union, Callable,Iterable,Set,Optional,Dict,List
 import asyncio, database, inspect
 import lnd_graph_pull
+import peewee
 from peewee import DoesNotExist
 import requests
 import time
@@ -1915,6 +1916,396 @@ async def _lnd_amp_send(
     return True
 
 
+# ----------------------------------------------------------------------------
+# Circular rebalancing
+# ----------------------------------------------------------------------------
+#
+# Periodic small self-payments that push sats from over-full channels
+# back through the LN graph into emptier ones. Two goals: (1) signal
+# to peers that the channel is in use, discouraging coop closes from
+# the remote side; (2) maintain inbound capacity for customer payments
+# by keeping our channels from drifting fully local-side.
+#
+# Budget model: REBALANCE_YEARLY_BUDGET_SAT divided by 365 gives a
+# daily fee allowance. Unused daily allowance rolls over — the engine
+# tracks the first-ever rebalance-attempt date in SimpleVariable and
+# computes:
+#   available = (daily_budget × days_since_first_attempt)
+#                  − sum(Rebalance.fee_sat where wallet_id matches)
+# Each tick attempts up to ONE successful rebalance per wallet
+# (per spec — stop on first success). Failures don't consume budget
+# (LN payments only pay on success).
+
+_FIRST_REBALANCE_DATE_KEY = "FIRST_REBALANCE_ATTEMPT_DATE"
+
+
+def _ensure_first_rebalance_attempt_recorded() -> datetime.datetime:
+    """Record TODAY as the first-attempt date if no marker exists yet,
+    otherwise return the existing marker. Idempotent: only the first
+    call writes; subsequent calls just read the existing value.
+
+    The marker drives the rollover budget calculation — we count
+    `daily_budget × days_since_first_attempt` against actual spend to
+    let unused early-days budget accumulate when there was nothing
+    to rebalance.
+    """
+    from database import SimpleVariable
+    now = utcnow_naive()
+    row, _created = SimpleVariable.get_or_create(
+        name=_FIRST_REBALANCE_DATE_KEY,
+        defaults={"value": now.isoformat()},
+    )
+    try:
+        return datetime.datetime.fromisoformat(row.value)
+    except (TypeError, ValueError):
+        # Malformed stored value (shouldn't happen — but be tolerant):
+        # treat as "started today" so we don't accidentally grant a
+        # huge rollover budget from a junk date.
+        row.value = now.isoformat()
+        row.save()
+        return now
+
+
+def _compute_rebalance_budget_remaining(wallet_id: str) -> int:
+    """Available rebalance fee budget (in sats) for this wallet.
+
+    Formula:
+        daily   = REBALANCE_YEARLY_BUDGET_SAT / 365
+        earned  = daily × (days since first-ever attempt + 1)
+        spent   = sum(Rebalance.fee_sat for this wallet)
+        available = max(0, earned − spent)
+
+    The +1 on days ensures today's allowance is included even on
+    the first-ever attempt (otherwise day-1 budget = 0 × daily = 0).
+    """
+    if REBALANCE_YEARLY_BUDGET_SAT <= 0:
+        return 0
+    from node_database import Rebalance
+    first_date = _ensure_first_rebalance_attempt_recorded()
+    now = utcnow_naive()
+    days_active = max(1, (now.date() - first_date.date()).days + 1)
+    daily = REBALANCE_YEARLY_BUDGET_SAT / 365.0
+    earned = int(daily * days_active)
+    spent_query = Rebalance.select(
+        peewee.fn.SUM(Rebalance.fee_sat),
+    ).where(Rebalance.wallet_id == wallet_id).scalar() or 0
+    spent = int(spent_query)
+    return max(0, earned - spent)
+
+
+def _rank_channel_pairs(
+    channels: List[Dict[str, Any]],
+) -> List[Tuple[Dict[str, Any], Dict[str, Any]]]:
+    """Return (out_channel, in_channel) candidate pairs ordered from
+    most-imbalanced (most likely to succeed) to least. The most
+    over-full channel is the best "out" candidate; the most empty is
+    the best "in" candidate. We try (most-out, most-in) first; if it
+    fails, fall back to (most-out, 2nd-most-in), etc.
+
+    Skips channels that don't expose the needed fields (defensive
+    against partial gRPC responses) and the always-skip case where
+    out and in are the same channel.
+    """
+    enriched = []
+    for c in channels:
+        try:
+            cap = int(c.get("capacity") or 0)
+            local = int(c.get("local_balance") or 0)
+        except (TypeError, ValueError):
+            continue
+        if cap <= 0:
+            continue
+        if not c.get("active"):
+            continue
+        if not c.get("chan_id"):
+            continue
+        if not c.get("remote_pubkey"):
+            continue
+        if not c.get("channel_point"):
+            continue
+        ratio = local / cap
+        enriched.append((ratio, c))
+    if len(enriched) < 2:
+        return []
+    enriched.sort(key=lambda x: x[0])   # ascending by ratio
+    # Out candidates: highest ratio first. In candidates: lowest first.
+    out_candidates = [c for _r, c in reversed(enriched)]
+    in_candidates = [c for _r, c in enriched]
+    pairs: List[Tuple[Dict[str, Any], Dict[str, Any]]] = []
+    for out_chan in out_candidates:
+        for in_chan in in_candidates:
+            if out_chan["channel_point"] == in_chan["channel_point"]:
+                continue
+            pairs.append((out_chan, in_chan))
+    return pairs
+
+
+async def _try_rebalance_through_pair(
+    api: "BitcartAPI",
+    wallet_id: str,
+    out_chan: Dict[str, Any],
+    in_chan: Dict[str, Any],
+    fee_budget_sat: int,
+) -> bool:
+    """Attempt a single circular rebalance through (out_chan, in_chan).
+    Returns True if a payment actually succeeded.
+
+    Binary-halving search for a workable amount:
+      1. Start with max_amount = min(
+             out_chan.local_balance − REBALANCE_MIN_CHANNEL_BUFFER_SAT,
+             in_chan.remote_balance − REBALANCE_MIN_CHANNEL_BUFFER_SAT,
+         )
+      2. QueryRoutes(amount, outgoing_chan_id, last_hop_pubkey):
+           - if a route exists at fee ≤ budget, SendPaymentV2 for real
+           - else halve amount and retry
+      3. Bail when amount < REBALANCE_MIN_CHANNEL_BUFFER_SAT, or when
+         the cheapest route's fee doesn't decrease as amount halves
+         (base fees dominate — halving won't help).
+    """
+    out_local = int(out_chan.get("local_balance") or 0)
+    in_remote = int(in_chan.get("remote_balance") or 0)
+    buffer = int(REBALANCE_MIN_CHANNEL_BUFFER_SAT)
+    max_amount = min(out_local - buffer, in_remote - buffer)
+    if max_amount < buffer:
+        return False
+
+    conn = await _get_lnd_connection(api, wallet_id)
+    lightning_stub = conn["stubs"]["Lightning"]
+    router_stub = conn["stubs"]["Router"]
+
+    # Our own pubkey — needed for the QueryRoutes self-payment + the
+    # SendPaymentV2 self-payment. Cached on the connection by
+    # _get_lnd_connection.
+    info = await lightning_stub.GetInfo(_lightning_pb2.GetInfoRequest())
+    self_pubkey = info.identity_pubkey
+
+    out_chan_id = int(out_chan["chan_id"])
+    in_peer_pubkey_hex = in_chan["remote_pubkey"]
+    in_peer_pubkey_bytes = bytes.fromhex(in_peer_pubkey_hex)
+
+    amount = max_amount
+    prev_fee: Optional[int] = None
+    while amount >= buffer:
+        # Planning-only RPC: returns the cheapest route + its fee.
+        # Doesn't move any money.
+        try:
+            qr_resp = await lightning_stub.QueryRoutes(
+                _lightning_pb2.QueryRoutesRequest(
+                    pub_key=self_pubkey,
+                    amt=int(amount),
+                    fee_limit=_lightning_pb2.FeeLimit(fixed=int(fee_budget_sat)),
+                    outgoing_chan_id=out_chan_id,
+                    last_hop_pubkey=in_peer_pubkey_bytes,
+                ),
+                timeout=30.0,
+            )
+        except _grpc.aio.AioRpcError as e:
+            # "no route found" comes back as an RPC error with a
+            # specific status; treat as "halve and retry". The other
+            # error types (timeout, deadline exceeded) we treat the
+            # same — moving on rather than retrying immediately.
+            logger.debug(
+                f"rebalance probe QueryRoutes failed at amount={amount}: "
+                f"{e.details()}"
+            )
+            amount //= 2
+            continue
+        if not qr_resp.routes:
+            amount //= 2
+            continue
+        cheapest = qr_resp.routes[0]
+        fee = int(cheapest.total_fees)
+        if fee <= fee_budget_sat:
+            # Found a viable amount — actually send. Use SendPaymentV2
+            # against our own invoice with the same outgoing_chan_id +
+            # last_hop_pubkey constraint so LND uses (effectively) the
+            # route we just probed.
+            return await _execute_rebalance(
+                api=api, wallet_id=wallet_id,
+                amount_sat=amount,
+                fee_budget_sat=fee_budget_sat,
+                out_chan=out_chan,
+                in_chan=in_chan,
+                in_peer_pubkey_bytes=in_peer_pubkey_bytes,
+                lightning_stub=lightning_stub,
+                router_stub=router_stub,
+            )
+        # Base-fee saturation: if halving the amount didn't reduce the
+        # fee, the route's base fees are eating the budget. Halving
+        # further won't help — bail on this pair.
+        if prev_fee is not None and fee >= prev_fee:
+            logger.debug(
+                f"rebalance probe: base fees saturate budget "
+                f"(amount={amount}, fee={fee}, prev={prev_fee}); "
+                f"moving to next pair"
+            )
+            return False
+        prev_fee = fee
+        amount //= 2
+    return False
+
+
+async def _execute_rebalance(
+    *,
+    api: "BitcartAPI",
+    wallet_id: str,
+    amount_sat: int,
+    fee_budget_sat: int,
+    out_chan: Dict[str, Any],
+    in_chan: Dict[str, Any],
+    in_peer_pubkey_bytes: bytes,
+    lightning_stub: Any,
+    router_stub: Any,
+) -> bool:
+    """Actually execute a circular rebalance. Creates a self-invoice
+    on our own LND, sends a payment to it via the specified channels,
+    persists a Rebalance row + LndPaymentLabel on success."""
+    # Create the self-invoice. memo carries REBALANCE_REASON so it's
+    # identifiable when inspected via lncli/Thunderhub later.
+    invoice = await lightning_stub.AddInvoice(
+        _lightning_pb2.Invoice(
+            value=int(amount_sat),
+            memo=REBALANCE_REASON,
+            expiry=300,  # 5 min — payment finishes within seconds
+        ),
+    )
+    payment_request = invoice.payment_request
+    payment_hash_hex = bytes(invoice.r_hash).hex().lower()
+
+    request = _router_pb2.SendPaymentRequest(
+        payment_request=payment_request,
+        timeout_seconds=60,
+        fee_limit_sat=int(fee_budget_sat),
+        outgoing_chan_id=int(out_chan["chan_id"]),
+        last_hop_pubkey=in_peer_pubkey_bytes,
+        allow_self_payment=True,
+        no_inflight_updates=True,
+    )
+    final = None
+    try:
+        async for update in router_stub.SendPaymentV2(request):
+            final = update
+    except _grpc.aio.AioRpcError as e:
+        logger.warning(
+            f"rebalance SendPaymentV2 for wallet {wallet_id[:8]} "
+            f"({amount_sat} sat through chan {out_chan['chan_id']} → "
+            f"{in_chan['chan_id']}) failed: {e.details()}"
+        )
+        return False
+    # PaymentStatus: UNKNOWN=0, IN_FLIGHT=1, SUCCEEDED=2, FAILED=3
+    if final is None or final.status != 2:
+        reason = "no_response" if final is None else _lightning_pb2.PaymentFailureReason.Name(
+            final.failure_reason,
+        )
+        logger.warning(
+            f"rebalance for wallet {wallet_id[:8]} "
+            f"({amount_sat} sat through chan {out_chan['chan_id']} → "
+            f"{in_chan['chan_id']}) returned status {final.status if final else 'None'}: {reason}"
+        )
+        return False
+    fee_sat_actual = int((final.fee_msat or 0) // 1000)
+    # Persist success. Rebalance row drives the budget gate; the
+    # LndPaymentLabel row makes the payment recognizable when
+    # new_calc_invoice_stats later walks LN history.
+    from node_database import Rebalance, LndPaymentLabel
+    try:
+        Rebalance.create(
+            payment_hash=payment_hash_hex,
+            wallet_id=wallet_id,
+            date=utcnow_naive(),
+            amount_sat=int(amount_sat),
+            fee_sat=fee_sat_actual,
+            out_channel_point=out_chan["channel_point"],
+            in_channel_point=in_chan["channel_point"],
+        )
+        LndPaymentLabel.replace(
+            payment_hash=payment_hash_hex,
+            wallet_id=wallet_id,
+            label=REBALANCE_REASON,
+        ).execute()
+    except Exception as e:
+        # DB persistence failed but the payment succeeded — log loudly
+        # so the operator notices, but don't fail the function (the
+        # money already moved; we just can't track it).
+        logger.error(
+            f"rebalance succeeded but DB persistence failed: {e} "
+            f"{traceback.format_exc()}"
+        )
+    log_event(
+        "Circular rebalance: %s sat from chan %s to chan %s "
+        "(fee %s sat, wallet …%s)",
+        amount_sat, out_chan["chan_id"], in_chan["chan_id"],
+        fee_sat_actual, wallet_short(wallet_id),
+    )
+    return True
+
+
+async def attempt_circular_rebalance(api: "BitcartAPI", wallet: Dict[str, Any]) -> bool:
+    """Per-wallet, per-tick: attempt up to ONE successful circular
+    rebalance.
+
+    Returns True if a rebalance succeeded this tick; False if no
+    rebalance happened (budget exhausted, <2 channels, all pairs
+    failed). Caller wraps in try/except + log_decision per the
+    standard tick-function pattern.
+
+    Spec compliance:
+      - Runs once per tick per wallet (caller controls cadence).
+      - Skips when wallet has fewer than 2 channels.
+      - Iterates channel pairs until first success (then stops).
+      - Records only successes in the Rebalance table.
+      - Records first-ever attempt date in SimpleVariable so the
+        rollover budget can be computed across days.
+    """
+    if REBALANCE_YEARLY_BUDGET_SAT <= 0:
+        return False
+    wallet_id = wallet.get("id") or ""
+    if not wallet_id:
+        return False
+    if wallet.get("currency") != "btclnd":
+        # Electrum's LN doesn't support the same SendPaymentV2 self-
+        # payment + outgoing_chan_id/last_hop_pubkey constraints
+        # we use here. Skipping cleanly is safer than half-implementing.
+        return False
+
+    fee_budget = _compute_rebalance_budget_remaining(wallet_id)
+    if fee_budget <= 0:
+        log_decision(
+            ("rebalance_budget", wallet_id), "exhausted",
+            "Rebalance: wallet …%s budget exhausted for today "
+            "(daily=%s, spent>=earned). Skipping.",
+            wallet_short(wallet_id),
+            REBALANCE_YEARLY_BUDGET_SAT / 365.0,
+        )
+        return False
+
+    try:
+        channels = await api.get_wallet_ln_channels(
+            wallet_id, active_only=True, online_only=False,
+        )
+    except Exception as e:
+        logger.warning(
+            f"rebalance: get_wallet_ln_channels failed for wallet "
+            f"{wallet_id[:8]}: {e} {traceback.format_exc()}"
+        )
+        return False
+    if not channels or len(channels) < 2:
+        return False
+
+    pairs = _rank_channel_pairs(channels)
+    if not pairs:
+        return False
+    for out_chan, in_chan in pairs:
+        ok = await _try_rebalance_through_pair(
+            api=api, wallet_id=wallet_id,
+            out_chan=out_chan, in_chan=in_chan,
+            fee_budget_sat=fee_budget,
+        )
+        if ok:
+            return True
+    return False
+
+
 async def new_calc_invoice_stats(
     api: BitcartAPI,
     since_date: Optional[datetime.datetime] = None,
@@ -1970,6 +2361,7 @@ async def new_calc_invoice_stats(
             ln_network_fees_paid_for_referral_payments_in_sats=0,
             onchain_network_fees_paid_for_referral_payments_in_sats=0,
             onchain_network_fees_paid_for_external_in_sats=0,
+            ln_network_fees_paid_for_rebalances_in_sats=0,
             misc_ln_network_fees_in_sats=0,
         )
         full_wallet=await api.get_best_ln_wallet_for_store(store)
@@ -2251,6 +2643,17 @@ async def new_calc_invoice_stats(
                     # into the referral-specific buckets.
                     store_stats.ln_network_fees_paid_for_referral_payments_in_sats += abs(transaction['fee_msat']/1000)
                     store_stats.total_referral_fees_paid_in_sats += abs(transaction['amount_msat']/1000)
+                    continue
+                if transaction['label'] == REBALANCE_REASON:
+                    # Circular rebalance: this is a self-payment that
+                    # cycles sats between our own channels. The
+                    # AMOUNT comes back to us via the in-channel side
+                    # so it's NOT revenue (and the incoming invoice
+                    # bypasses Bitcart's invoice store entirely, so
+                    # there's no row to accidentally count). Only the
+                    # routing fee is real cost; count it toward
+                    # network fees so it eats into the 2% dev-fee cap.
+                    store_stats.ln_network_fees_paid_for_rebalances_in_sats += abs(transaction['fee_msat']/1000)
                     continue
                 else:
                     store_stats.misc_ln_network_fees_in_sats+=abs(transaction['fee_msat']/1000)
@@ -8654,6 +9057,28 @@ async def main():
         onchain_to_ln_result = await run_every_x_seconds(my_func=decide_onchain_to_ln, seconds=90, api=api)
     except Exception as e:
         logger.error(f'Error calling onchain_to_ln_result: {e}:{traceback.format_exc()}')
+    # Circular rebalancing. Runs BEFORE fee payment + cashouts (per
+    # spec) because those operations deplete channel balances and
+    # would warp the rebalance math. Per-wallet, at most one
+    # successful rebalance per tick — the budget gate inside the fn
+    # handles the "skip if today's allowance is spent" case.
+    try:
+        if DEBUG_STEPS:
+            breakpoint()
+        rebalance_wallets = await api.get_wallets() or []
+        for w in rebalance_wallets:
+            if w.get("name") != "liquidityhelper":
+                continue
+            try:
+                await attempt_circular_rebalance(api, w)
+            except Exception as e:
+                logger.warning(
+                    f"attempt_circular_rebalance failed for wallet "
+                    f"{(w.get('id') or '')[:8]}: {e} {traceback.format_exc()}"
+                )
+    except Exception as e:
+        logger.error(f"Error iterating wallets for rebalance: {e} {traceback.format_exc()}")
+
     # Calculate and send fees, this check is heavy and shouldn't be run more than once per day
     fee_response = None
     try:
