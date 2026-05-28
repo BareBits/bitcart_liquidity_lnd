@@ -8,7 +8,7 @@
           <div class="kv-row">
             <span class="kv-label">Total revenue:</span>
             <span class="kv-value">
-              {{ formatAmount(store.revenue, displayUnit) }}
+              <MoneyDisplay :money="store.revenue" :unit="displayUnit" />
             </span>
           </div>
           <div class="kv-row">
@@ -26,18 +26,18 @@
           <div class="kv-row">
             <span class="kv-label">Developer fees paid:</span>
             <span class="kv-value">
-              {{ formatAmount(store.developer_fees_paid, displayUnit) }}
+              <MoneyDisplay :money="store.developer_fees_paid" :unit="displayUnit" />
               <span class="kv-meta">
-                of {{ formatAmount(store.developer_fees_due, displayUnit) }} due
+                of <MoneyDisplay :money="store.developer_fees_due" :unit="displayUnit" /> due
                 ({{ formatPct(store.developer_fee_pct) }} of revenue<span
                   v-if="developerRateConfigured !== null">,
                   configured rate {{ formatPct(developerRateConfigured) }}</span>)
               </span>
               <span v-if="developerBalanceSats > 0" class="kv-balance owed">
-                — {{ formatAmount(developerBalance, displayUnit) }} owed
+                — <MoneyDisplay :money="developerBalance" :unit="displayUnit" /> owed
               </span>
               <span v-else-if="developerBalanceSats < 0" class="kv-balance overpaid">
-                — overpaid by {{ formatAmount(developerOverpayment, displayUnit) }}
+                — overpaid by <MoneyDisplay :money="developerOverpayment" :unit="displayUnit" />
               </span>
             </span>
           </div>
@@ -46,18 +46,18 @@
           <div class="kv-row">
             <span class="kv-label">Hosting / setup fees paid:</span>
             <span class="kv-value">
-              {{ formatAmount(store.hosting_fees_paid, displayUnit) }}
+              <MoneyDisplay :money="store.hosting_fees_paid" :unit="displayUnit" />
               <span class="kv-meta">
-                of {{ formatAmount(store.hosting_fees_due, displayUnit) }} due
+                of <MoneyDisplay :money="store.hosting_fees_due" :unit="displayUnit" /> due
                 ({{ formatPct(store.hosting_fee_pct) }} of revenue<span
                   v-if="hostingRateConfigured !== null">,
                   configured rate {{ formatPct(hostingRateConfigured) }}</span>)
               </span>
               <span v-if="hostingBalanceSats > 0" class="kv-balance owed">
-                — {{ formatAmount(hostingBalance, displayUnit) }} owed
+                — <MoneyDisplay :money="hostingBalance" :unit="displayUnit" /> owed
               </span>
               <span v-else-if="hostingBalanceSats < 0" class="kv-balance overpaid">
-                — overpaid by {{ formatAmount(hostingOverpayment, displayUnit) }}
+                — overpaid by <MoneyDisplay :money="hostingOverpayment" :unit="displayUnit" />
               </span>
             </span>
           </div>
@@ -66,7 +66,7 @@
           <div class="kv-row">
             <span class="kv-label">Network fees (total):</span>
             <span class="kv-value">
-              {{ formatAmount(store.network_fees_total, displayUnit) }}
+              <MoneyDisplay :money="store.network_fees_total" :unit="displayUnit" />
             </span>
           </div>
           <!-- Indented breakdown — only shown for non-zero rows. -->
@@ -74,7 +74,7 @@
             <div v-for="row in feeRows" :key="row.key" class="kv-row indented">
               <span class="kv-label">{{ row.label }}:</span>
               <span class="kv-value">
-                {{ formatAmount({ sats: row.sats, btc: row.btc, usd: row.usd }, displayUnit) }}
+                <MoneyDisplay :money="{ sats: row.sats, btc: row.btc, usd: row.usd }" :unit="displayUnit" />
               </span>
             </div>
           </div>
@@ -86,7 +86,7 @@
           <div class="kv-row total net-fees">
             <span class="kv-label">Net fees paid (dev + hosting + network):</span>
             <span class="kv-value">
-              {{ formatAmount(store.net_fees_paid, displayUnit) }}
+              <MoneyDisplay :money="store.net_fees_paid" :unit="displayUnit" />
               <span class="kv-meta">
                 ({{ formatPct(store.net_fees_pct) }} of revenue)
               </span>
@@ -111,7 +111,7 @@
               />
               <span class="savings-label">credit-card baseline:</span>
               <span class="savings-value">
-                {{ formatAmount(savingsAtSelectedPct, displayUnit) }}
+                <MoneyDisplay :money="savingsAtSelectedPct" :unit="displayUnit" />
               </span>
             </div>
           </div>
@@ -142,6 +142,7 @@
 <script>
 import { Chart, ArcElement, Tooltip, Legend, DoughnutController } from "chart.js"
 import { formatBtcSats, formatUsd, formatPct, formatNumber, formatAmount } from "./format.js"
+import MoneyDisplay from "./MoneyDisplay.vue"
 
 // Chart.register has to happen once before any chart renders. Doing it at
 // module load (not inside mounted) means chart.js sees the same registry
@@ -151,6 +152,7 @@ Chart.register(ArcElement, Tooltip, Legend, DoughnutController)
 
 export default {
   name: "StoreCard",
+  components: { MoneyDisplay },
   props: {
     store: { type: Object, required: true },
     includeInbound: { type: Boolean, default: true },

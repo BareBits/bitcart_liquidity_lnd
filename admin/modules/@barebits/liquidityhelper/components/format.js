@@ -30,6 +30,27 @@ export function formatUsd(money) {
   return `$${formatNumber(money.usd, 2)}`
 }
 
+// Threshold above which a sats amount renders as e.g. "1.25M" instead
+// of "1,250,000". The full digit version is still available via
+// formatAmountFull() for tooltip use — the MoneyDisplay component
+// pairs the abbreviated render with a `title` attribute carrying the
+// full text. 1 million chosen because below that the comma-formatted
+// number is still a reasonable column width.
+export const SATS_ABBREVIATE_THRESHOLD = 1_000_000
+
+// Format a sats integer in abbreviated form for amounts above the
+// threshold, or comma-formatted otherwise.
+//   abbreviateSats(100_000)    → "100,000 sats"
+//   abbreviateSats(1_500_000)  → "1.50M sats"
+//   abbreviateSats(125_000_000)→ "125.00M sats"
+function abbreviateSats(sats) {
+  const s = Math.round(Number(sats) || 0)
+  if (Math.abs(s) >= SATS_ABBREVIATE_THRESHOLD) {
+    return `${formatNumber(s / 1_000_000, 2)}M sats`
+  }
+  return `${formatNumber(s, 0)} sats`
+}
+
 // Format a _Money triple in the operator's selected unit, with the
 // USD equivalent always shown in parentheses. The unit toggle lives
 // at the top of the dashboard and propagates via the `displayUnit`
@@ -37,6 +58,8 @@ export function formatUsd(money) {
 //
 //   formatAmount({sats:100000, btc:0.001, usd:100.0}, "sats")
 //     → "100,000 sats ($100.00)"
+//   formatAmount({sats:1_500_000, btc:0.015, usd:1500.0}, "sats")
+//     → "1.50M sats ($1,500.00)"
 //   formatAmount({sats:100000, btc:0.001, usd:100.0}, "btc")
 //     → "0.00100000 BTC ($100.00)"
 //   formatAmount({sats:100000, btc:0.001, usd:null}, "sats")
@@ -44,7 +67,26 @@ export function formatUsd(money) {
 //
 // Defaults to sats when an unrecognized unit is passed — safer than
 // rendering raw BTC by accident on a startup-state miss.
+//
+// Use the MoneyDisplay component (not raw {{ formatAmount(...) }})
+// at every dashboard render site so the abbreviated form gets a
+// hover tooltip showing the un-abbreviated digits.
 export function formatAmount(money, unit) {
+  if (!money) return "—"
+  const main = unit === "btc"
+    ? `${formatNumber(money.btc, 8)} BTC`
+    : abbreviateSats(money.sats)
+  const usd = (money.usd === null || money.usd === undefined)
+    ? "$—"
+    : `$${formatNumber(money.usd, 2)}`
+  return `${main} (${usd})`
+}
+
+// Un-abbreviated version of formatAmount, used by MoneyDisplay as the
+// tooltip text so operators who hover see the full digit count for
+// amounts >= 1M sats. Always uses comma-formatted sats regardless of
+// the configured threshold.
+export function formatAmountFull(money, unit) {
   if (!money) return "—"
   const main = unit === "btc"
     ? `${formatNumber(money.btc, 8)} BTC`
@@ -59,12 +101,22 @@ export function formatAmount(money, unit) {
 // `sats` / `usd` columns (not a packed _Money object). Synthesizes a
 // _Money triple and delegates to formatAmount.
 export function formatAmountFromSats(sats, usd, unit) {
+  return formatAmount(_synthesizeMoney(sats, usd), unit)
+}
+
+// Un-abbreviated counterpart of formatAmountFromSats — same role as
+// formatAmountFull but for the (sats, usd) shape.
+export function formatAmountFromSatsFull(sats, usd, unit) {
+  return formatAmountFull(_synthesizeMoney(sats, usd), unit)
+}
+
+function _synthesizeMoney(sats, usd) {
   const s = Number(sats) || 0
-  return formatAmount({
+  return {
     sats: s,
     btc: s / 100000000,
     usd: (usd === null || usd === undefined) ? null : usd,
-  }, unit)
+  }
 }
 
 export function formatPct(pct) {

@@ -290,10 +290,10 @@
                             <span class="text-caption grey--text">({{ w.wallet_short }})</span>
                           </td>
                           <td class="text-right">
-                            {{ formatAmount(w.inbound, displayUnit) }}
+                            <MoneyDisplay :money="w.inbound" :unit="displayUnit" />
                           </td>
                           <td class="text-right">
-                            {{ formatAmount(w.outbound, displayUnit) }}
+                            <MoneyDisplay :money="w.outbound" :unit="displayUnit" />
                           </td>
                           <td class="text-right">{{ w.active_channel_count }}</td>
                         </tr>
@@ -307,10 +307,10 @@
                         <tr class="totals-row">
                           <th>Total</th>
                           <th class="text-right">
-                            {{ formatAmount(dashboard.liquidity_stats.total_inbound, displayUnit) }}
+                            <MoneyDisplay :money="dashboard.liquidity_stats.total_inbound" :unit="displayUnit" />
                           </th>
                           <th class="text-right">
-                            {{ formatAmount(dashboard.liquidity_stats.total_outbound, displayUnit) }}
+                            <MoneyDisplay :money="dashboard.liquidity_stats.total_outbound" :unit="displayUnit" />
                           </th>
                           <th class="text-right">
                             {{ dashboard.liquidity_stats.total_channel_count }}
@@ -346,10 +346,10 @@
                       <span class="text-caption">{{ item.iso_date }}</span>
                     </template>
                     <template #item.amount="{ item }">
-                      {{ formatAmountFromSats(item.amount_sats, item.amount_usd, displayUnit) }}
+                      <MoneyDisplay :sats="item.amount_sats" :usd="item.amount_usd" :unit="displayUnit" />
                     </template>
                     <template #item.fee_sats="{ item }">
-                      {{ formatAmountFromSats(item.fee_sats, item.fee_usd, displayUnit) }}
+                      <MoneyDisplay :sats="item.fee_sats" :usd="item.fee_usd" :unit="displayUnit" />
                     </template>
                     <template #item.fee_type="{ item }">
                       <v-chip x-small :color="feeTypeColor(item.fee_type)" outlined>
@@ -394,7 +394,7 @@
                     class="totals-line text-right text-caption mt-2"
                   >
                     Total fees paid:
-                    <strong>{{ formatAmountFromSats(feePaymentsTotal.sats, feePaymentsTotal.usd, displayUnit) }}</strong>
+                    <strong><MoneyDisplay :sats="feePaymentsTotal.sats" :usd="feePaymentsTotal.usd" :unit="displayUnit" /></strong>
                   </div>
                 </v-card-text>
               </v-card>
@@ -418,10 +418,10 @@
                       <span class="text-caption">{{ item.iso_date }}</span>
                     </template>
                     <template #item.amount="{ item }">
-                      {{ formatAmountFromSats(item.amount_sats, item.amount_usd, displayUnit) }}
+                      <MoneyDisplay :sats="item.amount_sats" :usd="item.amount_usd" :unit="displayUnit" />
                     </template>
                     <template #item.fee_sats="{ item }">
-                      {{ formatAmountFromSats(item.fee_sats, item.fee_usd, displayUnit) }}
+                      <MoneyDisplay :sats="item.fee_sats" :usd="item.fee_usd" :unit="displayUnit" />
                     </template>
                     <template #item.fee_type="{ item }">
                       <v-chip x-small color="primary" outlined>
@@ -466,7 +466,7 @@
                     class="totals-line text-right text-caption mt-2"
                   >
                     Total cashouts:
-                    <strong>{{ formatAmountFromSats(cashoutsTotal.sats, cashoutsTotal.usd, displayUnit) }}</strong>
+                    <strong><MoneyDisplay :sats="cashoutsTotal.sats" :usd="cashoutsTotal.usd" :unit="displayUnit" /></strong>
                   </div>
                 </v-card-text>
               </v-card>
@@ -592,12 +592,12 @@
                     </template>
                     <template #item.paid_sats="{ item }">
                       <span class="text-caption">
-                        {{ formatAmountFromSats(item.paid_sats, item.paid_usd, displayUnit) }}
+                        <MoneyDisplay :sats="item.paid_sats" :usd="item.paid_usd" :unit="displayUnit" />
                       </span>
                     </template>
                     <template #item.refund_sats="{ item }">
                       <span class="text-caption">
-                        {{ formatAmountFromSats(item.refund_sats, item.refund_usd, displayUnit) }}
+                        <MoneyDisplay :sats="item.refund_sats" :usd="item.refund_usd" :unit="displayUnit" />
                         <v-icon
                           v-if="item.state === 'FAILED' && !item.refund_observed_onchain"
                           x-small color="warning" class="ml-1"
@@ -607,7 +607,7 @@
                     </template>
                     <template #item.net_cost_sats="{ item }">
                       <span class="text-caption">
-                        {{ formatAmountFromSats(item.net_cost_sats, item.net_cost_usd, displayUnit) }}
+                        <MoneyDisplay :sats="item.net_cost_sats" :usd="item.net_cost_usd" :unit="displayUnit" />
                       </span>
                     </template>
                     <template #item.channel_funding_txid="{ item }">
@@ -661,10 +661,10 @@
                       <span class="text-caption">{{ item.iso_date }}</span>
                     </template>
                     <template #item.fee_sats="{ item }">
-                      {{ formatAmountFromSats(item.fee_sats, item.fee_usd, displayUnit) }}
+                      <MoneyDisplay :sats="item.fee_sats" :usd="item.fee_usd" :unit="displayUnit" />
                     </template>
                     <template #item.amount_sats="{ item }">
-                      {{ formatAmountFromSats(item.amount_sats, item.amount_usd, displayUnit) }}
+                      <MoneyDisplay :sats="item.amount_sats" :usd="item.amount_usd" :unit="displayUnit" />
                     </template>
                     <template #item.category="{ item }">
                       <v-chip x-small :color="networkFeeCategoryColor(item.category)" outlined>
@@ -709,7 +709,7 @@
                     class="totals-line text-right text-caption mt-2"
                   >
                     Total network fees:
-                    <strong>{{ formatAmountFromSats(networkFeesTotal.sats, networkFeesTotal.usd, displayUnit) }}</strong>
+                    <strong><MoneyDisplay :sats="networkFeesTotal.sats" :usd="networkFeesTotal.usd" :unit="displayUnit" /></strong>
                   </div>
                 </v-card-text>
               </v-card>
@@ -1081,6 +1081,7 @@
 <script>
 import PolicySetting from "@/components/PolicySetting.vue"
 import StoreCard from "../components/StoreCard.vue"
+import MoneyDisplay from "../components/MoneyDisplay.vue"
 import {
   formatNumber,
   formatBtcSats,
@@ -1111,7 +1112,7 @@ function _loadDisplayUnit() {
 
 
 export default {
-  components: { PolicySetting, StoreCard },
+  components: { PolicySetting, StoreCard, MoneyDisplay },
   // Use the default layout (drawer + app bar). The "admin" layout
   // wraps every page in bitcart's server-management nav-toolbar,
   // which is for User Management / Server Logs / etc. — not the
