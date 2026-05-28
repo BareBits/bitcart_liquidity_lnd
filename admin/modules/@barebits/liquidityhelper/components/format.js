@@ -15,6 +15,8 @@ export function formatNumber(n, decimals = 2) {
 
 export function formatBtcSats(money) {
   // money = {sats, btc, usd}. Each field is independently nullable.
+  // Retained for any legacy template still using the dual-form render;
+  // new templates should prefer formatAmount(money, unit) instead.
   if (!money) return "—"
   const btcStr = formatNumber(money.btc, 8)
   const satsStr = formatNumber(money.sats, 0)
@@ -26,6 +28,43 @@ export function formatUsd(money) {
     return "$— (rate unavailable)"
   }
   return `$${formatNumber(money.usd, 2)}`
+}
+
+// Format a _Money triple in the operator's selected unit, with the
+// USD equivalent always shown in parentheses. The unit toggle lives
+// at the top of the dashboard and propagates via the `displayUnit`
+// prop (StoreCard) / data field (index.vue).
+//
+//   formatAmount({sats:100000, btc:0.001, usd:100.0}, "sats")
+//     → "100,000 sats ($100.00)"
+//   formatAmount({sats:100000, btc:0.001, usd:100.0}, "btc")
+//     → "0.00100000 BTC ($100.00)"
+//   formatAmount({sats:100000, btc:0.001, usd:null}, "sats")
+//     → "100,000 sats ($—)"
+//
+// Defaults to sats when an unrecognized unit is passed — safer than
+// rendering raw BTC by accident on a startup-state miss.
+export function formatAmount(money, unit) {
+  if (!money) return "—"
+  const main = unit === "btc"
+    ? `${formatNumber(money.btc, 8)} BTC`
+    : `${formatNumber(money.sats, 0)} sats`
+  const usd = (money.usd === null || money.usd === undefined)
+    ? "$—"
+    : `$${formatNumber(money.usd, 2)}`
+  return `${main} (${usd})`
+}
+
+// Convenience for payment-row tables that store amounts as separate
+// `sats` / `usd` columns (not a packed _Money object). Synthesizes a
+// _Money triple and delegates to formatAmount.
+export function formatAmountFromSats(sats, usd, unit) {
+  const s = Number(sats) || 0
+  return formatAmount({
+    sats: s,
+    btc: s / 100000000,
+    usd: (usd === null || usd === undefined) ? null : usd,
+  }, unit)
 }
 
 export function formatPct(pct) {

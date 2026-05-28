@@ -100,9 +100,9 @@
               </div>
             </v-alert>
 
-            <!-- Range selector + refresh -->
+            <!-- Range selector + unit toggle + refresh -->
             <v-row align="center" class="mb-3">
-              <v-col cols="12" sm="4">
+              <v-col cols="12" sm="3">
                 <v-select
                   v-model="dashboardRange"
                   :items="dashboardRangeOptions"
@@ -114,6 +114,22 @@
                 />
               </v-col>
               <v-col cols="12" sm="3">
+                <!-- Unit toggle. Persists in localStorage so the
+                     operator's preference survives reload. Default is
+                     sats; USD continues to render in parentheses
+                     regardless of the selected unit. -->
+                <v-btn-toggle
+                  v-model="displayUnit"
+                  mandatory
+                  dense
+                  color="primary"
+                  @change="persistDisplayUnit"
+                >
+                  <v-btn small value="sats">sats</v-btn>
+                  <v-btn small value="btc">BTC</v-btn>
+                </v-btn-toggle>
+              </v-col>
+              <v-col cols="12" sm="2">
                 <v-btn
                   block
                   color="primary"
@@ -123,7 +139,7 @@
                   <v-icon left>mdi-refresh</v-icon> Refresh
                 </v-btn>
               </v-col>
-              <v-col cols="12" sm="5" class="text-right text-caption">
+              <v-col cols="12" sm="4" class="text-right text-caption">
                 <span v-if="dashboard && dashboard.btc_usd_rate">
                   BTC/USD rate: ${{ formatNumber(dashboard.btc_usd_rate, 0) }}
                 </span>
@@ -164,6 +180,7 @@
                 :include-inbound="true"
                 :settings="settings"
                 :initial-cc-pct="dashboard.cc_baseline_pct"
+                :display-unit="displayUnit"
               />
 
               <!-- Summary section: only if more than one store. -->
@@ -178,6 +195,7 @@
                     :is-summary="true"
                     :settings="settings"
                     :initial-cc-pct="dashboard.cc_baseline_pct"
+                    :display-unit="displayUnit"
                   />
                 </v-card-text>
               </v-card>
@@ -230,12 +248,10 @@
                             <span class="text-caption grey--text">({{ w.wallet_short }})</span>
                           </td>
                           <td class="text-right">
-                            {{ formatBtcSats(w.inbound) }} /
-                            {{ formatUsd(w.inbound) }}
+                            {{ formatAmount(w.inbound, displayUnit) }}
                           </td>
                           <td class="text-right">
-                            {{ formatBtcSats(w.outbound) }} /
-                            {{ formatUsd(w.outbound) }}
+                            {{ formatAmount(w.outbound, displayUnit) }}
                           </td>
                           <td class="text-right">{{ w.active_channel_count }}</td>
                         </tr>
@@ -249,12 +265,10 @@
                         <tr class="totals-row">
                           <th>Total</th>
                           <th class="text-right">
-                            {{ formatBtcSats(dashboard.liquidity_stats.total_inbound) }} /
-                            {{ formatUsd(dashboard.liquidity_stats.total_inbound) }}
+                            {{ formatAmount(dashboard.liquidity_stats.total_inbound, displayUnit) }}
                           </th>
                           <th class="text-right">
-                            {{ formatBtcSats(dashboard.liquidity_stats.total_outbound) }} /
-                            {{ formatUsd(dashboard.liquidity_stats.total_outbound) }}
+                            {{ formatAmount(dashboard.liquidity_stats.total_outbound, displayUnit) }}
                           </th>
                           <th class="text-right">
                             {{ dashboard.liquidity_stats.total_channel_count }}
@@ -290,16 +304,10 @@
                       <span class="text-caption">{{ item.iso_date }}</span>
                     </template>
                     <template #item.amount="{ item }">
-                      {{ formatNumber(item.amount_sats, 0) }} sats
-                      <span class="kv-meta">
-                        / <span v-if="item.amount_usd !== null">\${{ formatNumber(item.amount_usd, 2) }}</span><span v-else>$—</span>
-                      </span>
+                      {{ formatAmountFromSats(item.amount_sats, item.amount_usd, displayUnit) }}
                     </template>
                     <template #item.fee_sats="{ item }">
-                      {{ formatNumber(item.fee_sats, 0) }} sats
-                      <span class="kv-meta">
-                        / <span v-if="item.fee_usd !== null">\${{ formatNumber(item.fee_usd, 2) }}</span><span v-else>$—</span>
-                      </span>
+                      {{ formatAmountFromSats(item.fee_sats, item.fee_usd, displayUnit) }}
                     </template>
                     <template #item.fee_type="{ item }">
                       <v-chip x-small :color="feeTypeColor(item.fee_type)" outlined>
@@ -361,16 +369,10 @@
                       <span class="text-caption">{{ item.iso_date }}</span>
                     </template>
                     <template #item.amount="{ item }">
-                      {{ formatNumber(item.amount_sats, 0) }} sats
-                      <span class="kv-meta">
-                        / <span v-if="item.amount_usd !== null">\${{ formatNumber(item.amount_usd, 2) }}</span><span v-else>$—</span>
-                      </span>
+                      {{ formatAmountFromSats(item.amount_sats, item.amount_usd, displayUnit) }}
                     </template>
                     <template #item.fee_sats="{ item }">
-                      {{ formatNumber(item.fee_sats, 0) }} sats
-                      <span class="kv-meta">
-                        / <span v-if="item.fee_usd !== null">\${{ formatNumber(item.fee_usd, 2) }}</span><span v-else>$—</span>
-                      </span>
+                      {{ formatAmountFromSats(item.fee_sats, item.fee_usd, displayUnit) }}
                     </template>
                     <template #item.fee_type="{ item }">
                       <v-chip x-small color="primary" outlined>
@@ -534,12 +536,12 @@
                     </template>
                     <template #item.paid_sats="{ item }">
                       <span class="text-caption">
-                        {{ item.paid_sats.toLocaleString() }}
+                        {{ formatAmountFromSats(item.paid_sats, item.paid_usd, displayUnit) }}
                       </span>
                     </template>
                     <template #item.refund_sats="{ item }">
                       <span class="text-caption">
-                        {{ item.refund_sats.toLocaleString() }}
+                        {{ formatAmountFromSats(item.refund_sats, item.refund_usd, displayUnit) }}
                         <v-icon
                           v-if="item.state === 'FAILED' && !item.refund_observed_onchain"
                           x-small color="warning" class="ml-1"
@@ -549,7 +551,7 @@
                     </template>
                     <template #item.net_cost_sats="{ item }">
                       <span class="text-caption">
-                        {{ item.net_cost_sats.toLocaleString() }}
+                        {{ formatAmountFromSats(item.net_cost_sats, item.net_cost_usd, displayUnit) }}
                       </span>
                     </template>
                     <template #item.channel_funding_txid="{ item }">
@@ -603,16 +605,10 @@
                       <span class="text-caption">{{ item.iso_date }}</span>
                     </template>
                     <template #item.fee_sats="{ item }">
-                      {{ formatNumber(item.fee_sats, 0) }} sats
-                      <span class="kv-meta">
-                        / <span v-if="item.fee_usd !== null">\${{ formatNumber(item.fee_usd, 2) }}</span><span v-else>$—</span>
-                      </span>
+                      {{ formatAmountFromSats(item.fee_sats, item.fee_usd, displayUnit) }}
                     </template>
                     <template #item.amount_sats="{ item }">
-                      {{ formatNumber(item.amount_sats, 0) }} sats
-                      <span class="kv-meta">
-                        / <span v-if="item.amount_usd !== null">\${{ formatNumber(item.amount_usd, 2) }}</span><span v-else>$—</span>
-                      </span>
+                      {{ formatAmountFromSats(item.amount_sats, item.amount_usd, displayUnit) }}
                     </template>
                     <template #item.category="{ item }">
                       <v-chip x-small :color="networkFeeCategoryColor(item.category)" outlined>
@@ -894,12 +890,28 @@ import {
   formatBtcSats,
   formatUsd,
   formatPct,
+  formatAmount,
+  formatAmountFromSats,
   guessType,
 } from "../components/format.js"
 
 // Auto-refresh cadence for the Logs tab. 3s is a comfortable balance
 // between "feels live" and "doesn't hammer the backend with no-op tails".
 const AUTO_REFRESH_INTERVAL_MS = 3000
+
+// localStorage key for the dashboard's BTC-vs-sats unit preference.
+// Survives reload but is per-browser per-user — no server-side persist.
+const DISPLAY_UNIT_STORAGE_KEY = "liquidityhelper.dashboard.displayUnit"
+
+function _loadDisplayUnit() {
+  try {
+    const v = window.localStorage.getItem(DISPLAY_UNIT_STORAGE_KEY)
+    if (v === "btc" || v === "sats") return v
+  } catch (_) {
+    // Storage disabled / privacy mode — fall through to default.
+  }
+  return "sats"
+}
 
 
 export default {
@@ -934,6 +946,11 @@ export default {
       ],
       loadingDashboard: false,
       dashboardError: null,
+      // Display-unit toggle. "sats" (default) or "btc". Initialized
+      // from localStorage so the operator's preference survives a
+      // reload. USD continues to render in parentheses regardless of
+      // the selected unit — the toggle only controls the main unit.
+      displayUnit: _loadDisplayUnit(),
       // Static column definitions for the recent-activity v-data-tables.
       // Defined in data() (not as a computed) so Vuetify gets a stable
       // reference and doesn't re-create header cells on every re-render.
@@ -1129,6 +1146,13 @@ export default {
   },
   methods: {
     guessType, formatNumber, formatBtcSats, formatUsd, formatPct,
+    formatAmount, formatAmountFromSats,
+    persistDisplayUnit() {
+      // Best-effort — privacy-mode browsers throw on setItem.
+      try {
+        window.localStorage.setItem(DISPLAY_UNIT_STORAGE_KEY, this.displayUnit)
+      } catch (_) { /* ignore */ }
+    },
     // Abbreviate long txid/payment_hash strings for table display.
     // First 8 + last 8 chars with an ellipsis in the middle is enough
     // to recognize / click the mempool link without breaking the row.

@@ -8,7 +8,7 @@
           <div class="kv-row">
             <span class="kv-label">Total revenue:</span>
             <span class="kv-value">
-              {{ formatBtcSats(store.revenue) }} / {{ formatUsd(store.revenue) }}
+              {{ formatAmount(store.revenue, displayUnit) }}
             </span>
           </div>
           <div class="kv-row">
@@ -26,21 +26,18 @@
           <div class="kv-row">
             <span class="kv-label">Developer fees paid:</span>
             <span class="kv-value">
-              {{ formatBtcSats(store.developer_fees_paid) }} /
-              {{ formatUsd(store.developer_fees_paid) }}
+              {{ formatAmount(store.developer_fees_paid, displayUnit) }}
               <span class="kv-meta">
-                of {{ formatBtcSats(store.developer_fees_due) }} /
-                {{ formatUsd(store.developer_fees_due) }} due
+                of {{ formatAmount(store.developer_fees_due, displayUnit) }} due
                 ({{ formatPct(store.developer_fee_pct) }} of revenue<span
                   v-if="developerRateConfigured !== null">,
                   configured rate {{ formatPct(developerRateConfigured) }}</span>)
               </span>
               <span v-if="developerBalanceSats > 0" class="kv-balance owed">
-                — {{ formatBtcSats(developerBalance) }} /
-                {{ formatUsd(developerBalance) }} owed
+                — {{ formatAmount(developerBalance, displayUnit) }} owed
               </span>
               <span v-else-if="developerBalanceSats < 0" class="kv-balance overpaid">
-                — overpaid by {{ formatBtcSats(developerOverpayment) }}
+                — overpaid by {{ formatAmount(developerOverpayment, displayUnit) }}
               </span>
             </span>
           </div>
@@ -49,21 +46,18 @@
           <div class="kv-row">
             <span class="kv-label">Hosting / setup fees paid:</span>
             <span class="kv-value">
-              {{ formatBtcSats(store.hosting_fees_paid) }} /
-              {{ formatUsd(store.hosting_fees_paid) }}
+              {{ formatAmount(store.hosting_fees_paid, displayUnit) }}
               <span class="kv-meta">
-                of {{ formatBtcSats(store.hosting_fees_due) }} /
-                {{ formatUsd(store.hosting_fees_due) }} due
+                of {{ formatAmount(store.hosting_fees_due, displayUnit) }} due
                 ({{ formatPct(store.hosting_fee_pct) }} of revenue<span
                   v-if="hostingRateConfigured !== null">,
                   configured rate {{ formatPct(hostingRateConfigured) }}</span>)
               </span>
               <span v-if="hostingBalanceSats > 0" class="kv-balance owed">
-                — {{ formatBtcSats(hostingBalance) }} /
-                {{ formatUsd(hostingBalance) }} owed
+                — {{ formatAmount(hostingBalance, displayUnit) }} owed
               </span>
               <span v-else-if="hostingBalanceSats < 0" class="kv-balance overpaid">
-                — overpaid by {{ formatBtcSats(hostingOverpayment) }}
+                — overpaid by {{ formatAmount(hostingOverpayment, displayUnit) }}
               </span>
             </span>
           </div>
@@ -72,8 +66,7 @@
           <div class="kv-row">
             <span class="kv-label">Network fees (total):</span>
             <span class="kv-value">
-              {{ formatBtcSats(store.network_fees_total) }} /
-              {{ formatUsd(store.network_fees_total) }}
+              {{ formatAmount(store.network_fees_total, displayUnit) }}
             </span>
           </div>
           <!-- Indented breakdown — only shown for non-zero rows. -->
@@ -81,9 +74,7 @@
             <div v-for="row in feeRows" :key="row.key" class="kv-row indented">
               <span class="kv-label">{{ row.label }}:</span>
               <span class="kv-value">
-                {{ formatBtcSats({ sats: row.sats, btc: row.btc }) }} /
-                <span v-if="row.usd !== null">${{ formatNumber(row.usd, 2) }}</span>
-                <span v-else>$— (rate unavailable)</span>
+                {{ formatAmount({ sats: row.sats, btc: row.btc, usd: row.usd }, displayUnit) }}
               </span>
             </div>
           </div>
@@ -95,7 +86,7 @@
           <div class="kv-row total net-fees">
             <span class="kv-label">Net fees paid (dev + hosting + network):</span>
             <span class="kv-value">
-              {{ formatBtcSats(store.net_fees_paid) }} / {{ formatUsd(store.net_fees_paid) }}
+              {{ formatAmount(store.net_fees_paid, displayUnit) }}
               <span class="kv-meta">
                 ({{ formatPct(store.net_fees_pct) }} of revenue)
               </span>
@@ -120,8 +111,7 @@
               />
               <span class="savings-label">credit-card baseline:</span>
               <span class="savings-value">
-                {{ formatBtcSats(savingsAtSelectedPct) }} /
-                {{ formatUsd(savingsAtSelectedPct) }}
+                {{ formatAmount(savingsAtSelectedPct, displayUnit) }}
               </span>
             </div>
           </div>
@@ -151,7 +141,7 @@
 
 <script>
 import { Chart, ArcElement, Tooltip, Legend, DoughnutController } from "chart.js"
-import { formatBtcSats, formatUsd, formatPct, formatNumber } from "./format.js"
+import { formatBtcSats, formatUsd, formatPct, formatNumber, formatAmount } from "./format.js"
 
 // Chart.register has to happen once before any chart renders. Doing it at
 // module load (not inside mounted) means chart.js sees the same registry
@@ -175,6 +165,11 @@ export default {
     // for 5%). Used as the initial value for the dropdown; the
     // dropdown can then override it without a backend round-trip.
     initialCcPct: { type: Number, default: 0.05 },
+    // Display unit for monetary amounts: "sats" (default) or "btc".
+    // The USD equivalent is always shown in parentheses regardless.
+    // Controlled by the toggle at the top of the dashboard page in
+    // index.vue.
+    displayUnit: { type: String, default: "sats" },
   },
   data() {
     return {
@@ -305,7 +300,7 @@ export default {
     }
   },
   methods: {
-    formatBtcSats, formatUsd, formatPct, formatNumber,
+    formatBtcSats, formatUsd, formatPct, formatNumber, formatAmount,
     // Synthesize a _Money-shaped object from a sat amount so the
     // existing formatters work uniformly. USD per sat is borrowed from
     // the same rate-source the rest of the card uses; null when the
