@@ -1247,21 +1247,31 @@ async def _get_lnd_connection(api: BitcartAPI, wallet_id: str) -> Dict[str, Any]
             raise RuntimeError(f"Could not fetch LND info for wallet {wallet_id}")
         # Plugin-mode host override. bitcart's get_lnd_info() returns
         # the host LND advertises to itself ("127.0.0.1") — works on a
-        # laptop with an SSH-tunneled gRPC port but fails inside the
-        # backend container, where 127.0.0.1 isn't where LND lives.
-        # When the bitcart container env var BITCART_BACKEND_ROOTPATH is
-        # set we know we are running inside a bitcart backend; in that
-        # case dial the docker DNS name of the LND wallet's daemon
-        # container instead. The port stays whatever bitcart reports for
-        # this particular wallet so multi-wallet installs (one LND
-        # process per wallet, each on a distinct port in btclnd's range)
-        # all reach their own LND. LIQUIDITYHELPER_LND_HOST is an
-        # explicit override for tests and unusual topologies.
+        # laptop with an SSH-tunneled gRPC port but fails inside any
+        # bitcart container, where 127.0.0.1 isn't where LND lives.
+        # Inside the docker stack the LND daemon is reachable at the
+        # compose service name `btclnd` via the network's DNS. The
+        # port stays whatever bitcart reports for this particular
+        # wallet so multi-wallet installs (one LND process per wallet,
+        # each on a distinct port in btclnd's range) all reach their
+        # own LND.
+        #
+        # BITCART_ENV is set on every container in the compose stack
+        # (backend AND worker, plus admin/store/etc.). The pre-existing
+        # BITCART_BACKEND_ROOTPATH-only check missed the worker case:
+        # worker would dial 127.0.0.1 (its own loopback, nothing
+        # listening) and get "Connection refused" on every LND RPC.
+        # LIQUIDITYHELPER_LND_HOST is an explicit override for tests
+        # and unusual topologies.
         host = info["host"]
         host_override = _os.environ.get("LIQUIDITYHELPER_LND_HOST")
+        in_bitcart_container = bool(
+            _os.environ.get("BITCART_ENV")
+            or _os.environ.get("BITCART_BACKEND_ROOTPATH")
+        )
         if host_override:
             host = host_override
-        elif _os.environ.get("BITCART_BACKEND_ROOTPATH") and host in ("127.0.0.1", "localhost"):
+        elif in_bitcart_container and host in ("127.0.0.1", "localhost"):
             host = "btclnd"
         cert = _base64.b64decode(info["tls_cert"])
         macaroon_hex = _codecs.encode(_base64.b64decode(info["macaroon"]), "hex").decode()
