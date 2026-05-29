@@ -299,7 +299,38 @@ class Plugin(BasePlugin):
         # being methods on the Plugin class themselves. This is
         # how refresh_settings_from_bitcart reaches bitcart's
         # in-process plugin_registry from outside the Plugin.
-        register_plugin_instance(self)
+        #
+        # CRITICAL: register against BOTH module objects. Python
+        # keeps `bitcart_plugin.settings_bridge` (top-level,
+        # imported by liquidityhelper.py via its sys.path bootstrap)
+        # and `modules.@barebits.liquidityhelper.bitcart_plugin.settings_bridge`
+        # (package-relative, what `register_plugin_instance` imported
+        # at the top of this file resolves to) as SEPARATE module
+        # objects in sys.modules with SEPARATE `_plugin_instance_ref`
+        # globals. A setattr on one is invisible to the other.
+        # `compute_health_warnings` and `run_tick_loop` import the
+        # top-level name, so registering only the package version
+        # leaves the engine's refresh path seeing `None` and silently
+        # skipping the refresh — the original bug that left stale
+        # health warnings live on the dashboard.
+        # Mirrors the same dual-prime pattern used below for the
+        # config / liquidityhelper / classes settings application.
+        register_plugin_instance(self)  # registers on the package-path module
+        try:
+            from bitcart_plugin.settings_bridge import (
+                register_plugin_instance as _toplevel_register,
+            )
+            _toplevel_register(self)  # also registers on the top-level module
+        except ImportError:
+            # If the top-level alias hasn't been primed yet (or this
+            # is an unusual loader), the package-path registration
+            # alone keeps backend-side callers working. Worker tick
+            # loop's import happens AFTER this point, so by that
+            # time both registrations have run.
+            logger.debug(
+                "plugin startup: top-level bitcart_plugin alias not importable; "
+                "package-path registration is in effect"
+            )
         # Settings-changed hook: name format is fixed by plugin_registry,
         # see `set_plugin_settings_dict`.
         self.context.register_hook(
