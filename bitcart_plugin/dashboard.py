@@ -300,6 +300,12 @@ class HealthWarning(BaseModel):
     category: str     # "cashout" | "channel" | "reserves" | "loop" | "smtp" | "ln_health"
     title: str        # short label for the dashboard banner
     message: str      # longer explanation including offending values
+    # Config-setting names this warning references. Populated by each
+    # _check_*_config helper so the Settings tab can highlight every
+    # expansion-panel containing a setting that has an active warning.
+    # Empty for runtime-only warnings (e.g. ln-cashout-failing) that
+    # don't trace back to a specific setting.
+    settings: List[str] = []
 
 
 class DashboardResponse(BaseModel):

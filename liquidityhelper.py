@@ -8024,10 +8024,27 @@ _HEALTH_WARNING_IDS = (
 _LN_CASHOUT_FAIL_DAYS = 7  # fixed per operator decision
 
 
-def _warn(id_: str, severity: str, category: str, title: str, message: str) -> Dict[str, str]:
+def _warn(
+    id_: str,
+    severity: str,
+    category: str,
+    title: str,
+    message: str,
+    settings: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Build a HealthWarning dict.
+
+    `settings` names the config knobs this warning is about, so the
+    Settings tab can render a warning icon on the expansion panel
+    that contains any of them. Omit / pass [] for runtime-only
+    warnings (e.g. ln-cashout-failing) that aren't tied to a single
+    setting. Backend keeps the field always present (defaulting to
+    []) so the frontend never has to deal with `undefined`.
+    """
     return {
         "id": id_, "severity": severity, "category": category,
         "title": title, "message": message,
+        "settings": list(settings) if settings else [],
     }
 
 
@@ -8042,6 +8059,7 @@ def _check_cashout_config() -> List[Dict[str, str]]:
             "unset. Every LN cashout attempt will log an error and "
             "skip; LN revenue will accumulate in channels until you "
             "set a destination Lightning Address.",
+            settings=["ENABLE_CASHOUT_LN", "CASHOUT_LIGHTNING_ADDRESS"],
         ))
     if ENABLE_CASHOUT_ONCHAIN and not CASHOUT_ONCHAIN:
         out.append(_warn(
@@ -8051,6 +8069,7 @@ def _check_cashout_config() -> List[Dict[str, str]]:
             "On-chain cashouts will be skipped; on-chain revenue will "
             "stay in the wallet until you set a destination Bitcoin "
             "address.",
+            settings=["ENABLE_CASHOUT_ONCHAIN", "CASHOUT_ONCHAIN"],
         ))
     if PREFER_CASHOUT_ONCHAIN and not PREFER_LN_CASHOUT and (
         not ENABLE_CASHOUT_ONCHAIN or not CASHOUT_ONCHAIN
@@ -8064,6 +8083,7 @@ def _check_cashout_config() -> List[Dict[str, str]]:
             f"ENABLE_CASHOUT_ONCHAIN=True and CASHOUT_ONCHAIN set. "
             f"Currently: ENABLE_CASHOUT_ONCHAIN={ENABLE_CASHOUT_ONCHAIN}, "
             f"CASHOUT_ONCHAIN={'set' if CASHOUT_ONCHAIN else 'unset'}.",
+            settings=["PREFER_CASHOUT_ONCHAIN", "ENABLE_CASHOUT_ONCHAIN", "CASHOUT_ONCHAIN"],
         ))
     if PREFER_LN_CASHOUT and (
         not ENABLE_CASHOUT_LN or not CASHOUT_LIGHTNING_ADDRESS
@@ -8077,6 +8097,7 @@ def _check_cashout_config() -> List[Dict[str, str]]:
             f"ENABLE_CASHOUT_LN={ENABLE_CASHOUT_LN}, "
             f"CASHOUT_LIGHTNING_ADDRESS="
             f"{'set' if CASHOUT_LIGHTNING_ADDRESS else 'unset'}.",
+            settings=["PREFER_LN_CASHOUT", "ENABLE_CASHOUT_LN", "CASHOUT_LIGHTNING_ADDRESS"],
         ))
     if (not ENABLE_CASHOUT_LN
             and not ENABLE_CASHOUT_ONCHAIN
@@ -8087,6 +8108,7 @@ def _check_cashout_config() -> List[Dict[str, str]]:
             "ENABLE_CASHOUT_LN, ENABLE_CASHOUT_ONCHAIN, and "
             "PREFER_LN_CASHOUT are all False/off — no cashouts will "
             "ever fire. Revenue will accumulate indefinitely.",
+            settings=["ENABLE_CASHOUT_LN", "ENABLE_CASHOUT_ONCHAIN", "PREFER_LN_CASHOUT"],
         ))
     if PREFER_LN_CASHOUT and PREFER_CASHOUT_ONCHAIN:
         out.append(_warn(
@@ -8096,6 +8118,7 @@ def _check_cashout_config() -> List[Dict[str, str]]:
             "on-chain excess opens new LN channels and LN balance "
             "continues to sweep to CASHOUT_LIGHTNING_ADDRESS. Unset "
             "one to remove this warning.",
+            settings=["PREFER_LN_CASHOUT", "PREFER_CASHOUT_ONCHAIN"],
         ))
     if (CASHOUT_SWITCH_TO_ONCHAIN_AFTER_X_DAYS is not None
             and not ENABLE_CASHOUT_ONCHAIN):
@@ -8108,6 +8131,7 @@ def _check_cashout_config() -> List[Dict[str, str]]:
             f"stale there's no on-chain rail to switch to. Either "
             f"enable on-chain cashouts or set the staleness window to "
             f"None.",
+            settings=["CASHOUT_SWITCH_TO_ONCHAIN_AFTER_X_DAYS", "ENABLE_CASHOUT_ONCHAIN"],
         ))
     return out
 
@@ -8124,6 +8148,7 @@ def _check_channel_reserve_config() -> List[Dict[str, str]]:
             f"below the Electrum/Bitcart daemon's hardcoded minimum of "
             f"{daemon_min:,} sat. Any channel-open attempt at this size "
             f"will be rejected by the daemon.",
+            settings=["MIN_CHANNEL_SIZE_IN_SATS"],
         ))
     if MIN_CHANNEL_COUNT < 1:
         out.append(_warn(
@@ -8132,6 +8157,7 @@ def _check_channel_reserve_config() -> List[Dict[str, str]]:
             f"MIN_CHANNEL_COUNT={MIN_CHANNEL_COUNT}. Liquidity check + "
             f"reserve-floor formulas use this as a multiplier; values "
             f"below 1 produce nonsensical math.",
+            settings=["MIN_CHANNEL_COUNT"],
         ))
     if MIN_INBOUND_LIQUIDITY < MIN_INBOUND_LIQUIDITY_PER_CHANNEL:
         out.append(_warn(
@@ -8142,6 +8168,7 @@ def _check_channel_reserve_config() -> List[Dict[str, str]]:
             f"{MIN_INBOUND_LIQUIDITY_PER_CHANNEL:,} sat. One channel "
             f"would exceed the whole-store target — probably a typo "
             f"in one of the two values.",
+            settings=["MIN_INBOUND_LIQUIDITY", "MIN_INBOUND_LIQUIDITY_PER_CHANNEL"],
         ))
     if LSP_RESERVE_CAP_SAT < MIN_RESERVE_ONCHAIN:
         out.append(_warn(
@@ -8151,6 +8178,7 @@ def _check_channel_reserve_config() -> List[Dict[str, str]]:
             f"MIN_RESERVE_ONCHAIN={MIN_RESERVE_ONCHAIN:,} sat. The cap "
             f"clamps the LSP-mode reserve floor *down* to the cap, "
             f"breaking the reserve math. The cap must be ≥ the floor.",
+            settings=["LSP_RESERVE_CAP_SAT", "MIN_RESERVE_ONCHAIN"],
         ))
     return out
 
@@ -8166,6 +8194,7 @@ def _check_loop_smtp_config() -> List[Dict[str, str]]:
             f"{LOOPD_NETWORK}; you must set LOOPD_SERVER_HOST to a "
             f"reachable loopserver (e.g. 127.0.0.1:11010) or loopd "
             f"will refuse to start.",
+            settings=["LOOPD_NETWORK", "LOOPD_SERVER_HOST"],
         ))
     if AUTOLOOP_ENABLED and not LOOP_OUT_ENABLED:
         out.append(_warn(
@@ -8174,6 +8203,7 @@ def _check_loop_smtp_config() -> List[Dict[str, str]]:
             "Autoloop runs inside loopd; it can't operate without "
             "LOOP_OUT_ENABLED. Either enable LOOP_OUT_ENABLED or "
             "disable AUTOLOOP_ENABLED.",
+            settings=["AUTOLOOP_ENABLED", "LOOP_OUT_ENABLED"],
         ))
     if LOOP_OUT_ENABLED and not CASHOUT_ONCHAIN:
         out.append(_warn(
@@ -8183,6 +8213,7 @@ def _check_loop_smtp_config() -> List[Dict[str, str]]:
             "With it unset, the drain helper is a silent no-op even "
             "when staleness fallback or PREFER_CASHOUT_ONCHAIN would "
             "otherwise fire it.",
+            settings=["LOOP_OUT_ENABLED", "CASHOUT_ONCHAIN"],
         ))
     if MANUAL_LIQUIDITY_LOOPOUT_FEE_PERCENT > 0.10:
         out.append(_warn(
@@ -8192,6 +8223,7 @@ def _check_loop_smtp_config() -> List[Dict[str, str]]:
             f"{MANUAL_LIQUIDITY_LOOPOUT_FEE_PERCENT:.4f}. Loop-out "
             f"fees in practice are well under 1% — values above 10% "
             f"are almost certainly a typo (e.g. 10 instead of 0.10).",
+            settings=["MANUAL_LIQUIDITY_LOOPOUT_FEE_PERCENT"],
         ))
     if AUTOLOOP_DEST_ADDRESS and AUTOLOOP_ACCOUNT:
         out.append(_warn(
@@ -8200,6 +8232,7 @@ def _check_loop_smtp_config() -> List[Dict[str, str]]:
             "Set one or the other, not both. With both set, loopd's "
             "behavior depends on its config-parse order and may not "
             "match your intent. Clear one to remove ambiguity.",
+            settings=["AUTOLOOP_DEST_ADDRESS", "AUTOLOOP_ACCOUNT"],
         ))
     if AUTOLOOP_MIN_SWAP_AMOUNT_SAT > AUTOLOOP_MAX_SWAP_AMOUNT_SAT:
         out.append(_warn(
@@ -8210,6 +8243,7 @@ def _check_loop_smtp_config() -> List[Dict[str, str]]:
             f"AUTOLOOP_MAX_SWAP_AMOUNT_SAT="
             f"{AUTOLOOP_MAX_SWAP_AMOUNT_SAT:,} sat. autoloop will "
             f"never find an amount in the empty range.",
+            settings=["AUTOLOOP_MIN_SWAP_AMOUNT_SAT", "AUTOLOOP_MAX_SWAP_AMOUNT_SAT"],
         ))
     if SMTP_TLS and SMTP_SSL:
         out.append(_warn(
@@ -8217,6 +8251,7 @@ def _check_loop_smtp_config() -> List[Dict[str, str]]:
             "SMTP_TLS and SMTP_SSL are both True",
             "These are mutually exclusive (STARTTLS vs implicit SSL). "
             "Pick one: TLS for ports like 587, SSL for port 465.",
+            settings=["SMTP_TLS", "SMTP_SSL"],
         ))
     # Partial SMTP config — at least one of the six required fields is
     # set while at least one other is missing. Treat all-unset as "user
@@ -8243,6 +8278,11 @@ def _check_loop_smtp_config() -> List[Dict[str, str]]:
             f"{', '.join(missing)}. Notifications won't be sent until "
             f"every required field is set, OR clear them all to opt "
             f"out of SMTP.",
+            # Surface the icon on the SMTP group regardless of which
+            # specific fields are missing — operator clicks the group
+            # to expand it and sees which row needs filling in.
+            settings=["SMTP_SERVER", "SMTP_PORT", "SMTP_FROM_EMAIL",
+                      "SMTP_TO_EMAIL", "SMTP_USERNAME", "SMTP_PASSWORD"],
         ))
     return out
 

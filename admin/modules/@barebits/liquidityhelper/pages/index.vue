@@ -388,14 +388,23 @@
                       </span>
                       <span v-else>—</span>
                     </template>
+                    <!-- Totals row, rendered inside the table BELOW the
+                         data rows but ABOVE the rows-per-page footer.
+                         #body.append is the right slot for this — putting
+                         the total div outside the v-data-table (the prior
+                         layout) placed it after the footer instead of
+                         before it. Suppressed when the table is empty;
+                         otherwise an unattached "Total fees paid: 0"
+                         appears below an empty "No fee payments yet." row. -->
+                    <template v-if="dashboard.recent_fee_payments.length" #body.append>
+                      <tr class="totals-row">
+                        <td :colspan="feePaymentHeaders.length" class="text-left text-caption">
+                          Total fees paid:
+                          <strong><MoneyDisplay :sats="feePaymentsTotal.sats" :usd="feePaymentsTotal.usd" :unit="displayUnit" /></strong>
+                        </td>
+                      </tr>
+                    </template>
                   </v-data-table>
-                  <div
-                    v-if="dashboard.recent_fee_payments.length"
-                    class="totals-line text-right text-caption mt-2"
-                  >
-                    Total fees paid:
-                    <strong><MoneyDisplay :sats="feePaymentsTotal.sats" :usd="feePaymentsTotal.usd" :unit="displayUnit" /></strong>
-                  </div>
                 </v-card-text>
               </v-card>
 
@@ -460,14 +469,15 @@
                       </span>
                       <span v-else>—</span>
                     </template>
+                    <template v-if="dashboard.recent_cashouts.length" #body.append>
+                      <tr class="totals-row">
+                        <td :colspan="paymentHeaders.length" class="text-left text-caption">
+                          Total cashouts:
+                          <strong><MoneyDisplay :sats="cashoutsTotal.sats" :usd="cashoutsTotal.usd" :unit="displayUnit" /></strong>
+                        </td>
+                      </tr>
+                    </template>
                   </v-data-table>
-                  <div
-                    v-if="dashboard.recent_cashouts.length"
-                    class="totals-line text-right text-caption mt-2"
-                  >
-                    Total cashouts:
-                    <strong><MoneyDisplay :sats="cashoutsTotal.sats" :usd="cashoutsTotal.usd" :unit="displayUnit" /></strong>
-                  </div>
                 </v-card-text>
               </v-card>
 
@@ -703,14 +713,15 @@
                       </span>
                       <span v-else>—</span>
                     </template>
+                    <template v-if="dashboard.recent_network_fees.length" #body.append>
+                      <tr class="totals-row">
+                        <td :colspan="networkFeeHeaders.length" class="text-left text-caption">
+                          Total network fees:
+                          <strong><MoneyDisplay :sats="networkFeesTotal.sats" :usd="networkFeesTotal.usd" :unit="displayUnit" /></strong>
+                        </td>
+                      </tr>
+                    </template>
                   </v-data-table>
-                  <div
-                    v-if="dashboard.recent_network_fees.length"
-                    class="totals-line text-right text-caption mt-2"
-                  >
-                    Total network fees:
-                    <strong><MoneyDisplay :sats="networkFeesTotal.sats" :usd="networkFeesTotal.usd" :unit="displayUnit" /></strong>
-                  </div>
                 </v-card-text>
               </v-card>
             </div>
@@ -749,7 +760,35 @@
                   :key="group.group"
                 >
                   <v-expansion-panel-header>
-                    <span class="text-h6">{{ group.group }}</span>
+                    <span class="text-h6 d-flex align-center">
+                      <!-- Warning icon when ANY setting in this group
+                           is referenced by an active dashboard health
+                           warning. Operator sees this from a glance at
+                           the closed list and knows which group to
+                           expand. The tooltip lists the offending
+                           setting names so we don't make the operator
+                           hunt inside the group for the one that's
+                           broken. Color follows the dashboard banner
+                           convention: error for HIGH, warning for
+                           MEDIUM, error wins when both present. -->
+                      <v-tooltip v-if="groupWarningInfo(group).count > 0" bottom max-width="420">
+                        <template #activator="{ on }">
+                          <v-icon
+                            :color="groupWarningInfo(group).color"
+                            class="mr-2"
+                            v-on="on"
+                          >mdi-alert</v-icon>
+                        </template>
+                        <span>
+                          {{ groupWarningInfo(group).count }} active
+                          warning{{ groupWarningInfo(group).count === 1 ? "" : "s" }}
+                          in this group:
+                          <br>
+                          {{ groupWarningInfo(group).settings.join(", ") }}
+                        </span>
+                      </v-tooltip>
+                      {{ group.group }}
+                    </span>
                     <template #actions>
                       <span class="text-caption grey--text mr-2">
                         {{ group.settings.length }} setting{{ group.settings.length === 1 ? "" : "s" }}
@@ -1705,6 +1744,39 @@ export default {
       if (type === "cashout") return "success"
       return "default"
     },
+    // Settings-tab support: return {count, settings, color} for the
+    // given schema group. `count` is the number of distinct settings
+    // in this group referenced by active dashboard.health_warnings.
+    // `settings` is the sorted list of those names (for the tooltip).
+    // `color` is "error" if any contributing warning is HIGH severity,
+    // "warning" otherwise — matches the dashboard banner palette so
+    // operators don't have to learn a second color mapping.
+    //
+    // Backed by HealthWarning.settings (list of related setting
+    // names per warning, populated server-side by every _check_*
+    // helper in liquidityhelper.py). Warnings without settings (e.g.
+    // ln-cashout-failing — a runtime warning not tied to one knob)
+    // contribute to the banner but not to any group icon.
+    groupWarningInfo(group) {
+      const warnings = (this.dashboard && this.dashboard.health_warnings) || []
+      if (!warnings.length) return { count: 0, settings: [], color: "warning" }
+      const groupNames = new Set((group.settings || []).map((s) => s.name))
+      const matching = new Set()
+      let highSeverity = false
+      for (const w of warnings) {
+        for (const name of (w.settings || [])) {
+          if (groupNames.has(name)) {
+            matching.add(name)
+            if (w.severity === "HIGH") highSeverity = true
+          }
+        }
+      }
+      return {
+        count: matching.size,
+        settings: Array.from(matching).sort(),
+        color: highSeverity ? "error" : "warning",
+      }
+    },
     // Color for the category chip in the Recent network fees table.
     // Reuses the fee-payment palette where categories overlap so a
     // glancing operator builds one mental color→meaning map.
@@ -1981,8 +2053,28 @@ export default {
   font-weight: 600;
 }
 
+/* Totals row injected into each recent-activity v-data-table via the
+   #body.append slot. Renders as the LAST row of the table body so it
+   sits BETWEEN the data rows and the rows-per-page pagination footer.
+   Visually distinguished from data rows by a top border and no hover
+   highlight (defeats Vuetify's row-hover background, which would
+   otherwise make this look clickable). */
+.totals-row td {
+  border-top: 2px solid rgba(0, 0, 0, 0.12);
+  /* Disable Vuetify's row-hover background — totals aren't clickable. */
+  background: transparent !important;
+}
+.theme--dark .totals-row td {
+  border-top-color: rgba(255, 255, 255, 0.16);
+}
+
 /* Per-table totals line under each recent-activity v-data-table.
-   Right-aligned, slight top border to separate from the data rows. */
+   Right-aligned, slight top border to separate from the data rows.
+   Note: superseded by the .totals-row pattern above (the new layout
+   uses #body.append to keep the totals INSIDE the table, above the
+   pagination footer); kept here briefly until any out-of-tree
+   templates referencing .totals-line are migrated. Safe to delete
+   after grepping confirms no other consumers. */
 .totals-line {
   border-top: 1px solid rgba(255, 255, 255, 0.08);
   padding-top: 6px;
