@@ -38,7 +38,11 @@ from sqlalchemy import select
 from .bitcart_plugin.settings_schema import (
     PluginSettings, get_settings_groups,
 )
-from .bitcart_plugin.settings_bridge import apply_settings, merge_with_config
+from .bitcart_plugin.settings_bridge import (
+    apply_settings,
+    merge_with_config,
+    register_plugin_instance,
+)
 from .bitcart_plugin.log_endpoints import (
     build_router, install_plugin_log_sinks, build_debug_router,
 )
@@ -288,6 +292,14 @@ class Plugin(BasePlugin):
         # before worker_setup has run — worker_setup only fires on
         # worker processes, so HTTP-only processes also need this call.
         self.register_settings(PluginSettings)
+        # Stash a reference to this Plugin instance on the
+        # settings_bridge module so free functions in the engine
+        # (run_tick_loop, compute_health_warnings) can call
+        # self.get_plugin_settings() through the bridge without
+        # being methods on the Plugin class themselves. This is
+        # how refresh_settings_from_bitcart reaches bitcart's
+        # in-process plugin_registry from outside the Plugin.
+        register_plugin_instance(self)
         # Settings-changed hook: name format is fixed by plugin_registry,
         # see `set_plugin_settings_dict`.
         self.context.register_hook(

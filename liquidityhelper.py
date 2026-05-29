@@ -8376,7 +8376,26 @@ async def compute_health_warnings(
     The tick loop calls collect_health_warnings (below) instead,
     which compose this with emit_health_warning_transitions to keep
     the decisions stream up to date.
+
+    Refresh the engine's module globals from bitcart's stored
+    settings BEFORE evaluating any check. Without this, a setting
+    the operator saved on the dashboard's Settings tab could remain
+    invisible to compute_health_warnings until the worker process
+    eventually picked it up — and the dashboard would keep showing
+    a stale warning ("CASHOUT_LIGHTNING_ADDRESS is unset") even
+    though the operator literally just filled it in. The refresh
+    ensures THIS request's view is the live saved state. See
+    refresh_settings_from_bitcart for the failure-mode contract.
     """
+    try:
+        from bitcart_plugin.settings_bridge import (
+            refresh_settings_from_bitcart,
+        )
+        await refresh_settings_from_bitcart()
+    except ImportError:
+        # Standalone mode (no plugin context); fall through to the
+        # existing config-based values.
+        pass
     active: List[Dict[str, str]] = []
     active.extend(_check_cashout_config())
     active.extend(_check_channel_reserve_config())
@@ -9305,6 +9324,32 @@ async def run_tick_loop(stop_event: Optional[asyncio.Event] = None) -> None:
     # come from a parked wait).
     _debug_run_once_trigger.clear()
     while True:
+        # Pull the freshest plugin settings from bitcart's storage
+        # BEFORE checking DEBUG_MODE (or running anything else in the
+        # tick body). Bitcart's settings_changed:liquidityhelper hook
+        # propagates within the process that received the POST, but
+        # not across the backend↔worker boundary — without this
+        # refresh, a setting saved on the dashboard's Settings tab
+        # might never take effect in the worker's tick loop until a
+        # process restart. Polling each iteration eliminates that
+        # whole class of bug at a cost of one cheap intra-VPS RPC
+        # per tick (~5-20ms, dwarfed by tick body work).
+        #
+        # Safe to call from inside the loop: the helper apply_settings
+        # to module globals; on transient bitcart hiccups it logs a
+        # warning and keeps the current values rather than blanking
+        # them (partial-failure tolerance — see refresh_settings_from_bitcart).
+        try:
+            from bitcart_plugin.settings_bridge import (
+                refresh_settings_from_bitcart,
+            )
+            await refresh_settings_from_bitcart()
+        except ImportError:
+            # Standalone mode (no plugin context): no bitcart_plugin
+            # on sys.path and nothing to refresh against — the values
+            # from config.py / env / user_config.py are authoritative.
+            # Silently skip.
+            pass
         # Debug gate. Re-read DEBUG_MODE every iteration so the
         # operator can toggle it live via the settings page without a
         # restart. When debug mode is on, block here until either:
