@@ -1,7 +1,23 @@
 <template>
   <v-card outlined class="mb-4 store-card">
-    <v-card-title v-if="!isSummary">Fee breakdown</v-card-title>
-    <v-card-text>
+    <!-- Click the title to collapse/expand. Only the per-store
+         variant has a v-card-title (`isSummary=true` cards have
+         no title — they're already wrapped by an outer v-card in
+         index.vue that owns the collapse toggle). When this title
+         is absent, the body stays unconditionally visible so the
+         outer wrapper's collapse fully controls visibility. -->
+    <v-card-title
+      v-if="!isSummary"
+      @click="collapsed = !collapsed"
+      class="section-toggle"
+    >
+      <v-icon class="mr-2">
+        {{ collapsed ? 'mdi-chevron-right' : 'mdi-chevron-down' }}
+      </v-icon>
+      Fee breakdown
+    </v-card-title>
+    <v-expand-transition>
+    <v-card-text v-show="!collapsed || isSummary">
       <v-row>
         <v-col cols="12" md="7">
           <!-- Revenue + sales -->
@@ -154,6 +170,7 @@
         </v-col>
       </v-row>
     </v-card-text>
+    </v-expand-transition>
   </v-card>
 </template>
 
@@ -193,6 +210,13 @@ export default {
   },
   data() {
     return {
+      // Collapsed flag for the Fee-breakdown card. Defaults to false
+      // so the section is open on first load. Per-instance — each
+      // store has its own collapse state. The summary variant
+      // (isSummary=true) is rendered without a title, so this flag
+      // is ignored there (the v-show in the template gates on
+      // `!collapsed || isSummary`).
+      collapsed: false,
       // Persistent ref to the Chart instance so we can destroy it on
       // store-data changes. Chart.js leaks canvases otherwise.
       chartInstance: null,
@@ -473,6 +497,21 @@ export default {
 }
 .kv-balance.owed { color: #FFB300; }
 .kv-balance.overpaid { color: #4caf50; }
+
+/* Clickable v-card-title used to collapse/expand the card. Mirror
+   of the same selector in pages/index.vue — restated here since
+   that file's <style scoped> doesn't reach this component's
+   template (Vue scoped CSS scopes to the parent's template only). */
+.section-toggle {
+  cursor: pointer;
+  user-select: none;
+}
+.section-toggle:hover {
+  background-color: rgba(0, 0, 0, 0.04);
+}
+.theme--dark .section-toggle:hover {
+  background-color: rgba(255, 255, 255, 0.06);
+}
 
 /* Info-circle icon next to a fee-breakdown row label. Hover gives a
    native tooltip via the title attribute. Muted color so the icon

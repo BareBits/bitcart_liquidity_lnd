@@ -227,19 +227,24 @@
 
               <!-- Summary section: only if more than one store. -->
               <v-card v-if="dashboard.summary" outlined class="mb-4 summary-card">
-                <v-card-title>
+                <v-card-title @click="toggleSection('summary')" class="section-toggle">
+                  <v-icon class="mr-2">
+                    {{ isExpanded('summary') ? 'mdi-chevron-down' : 'mdi-chevron-right' }}
+                  </v-icon>
                   Summary — all stores combined
                 </v-card-title>
-                <v-card-text>
-                  <StoreCard
-                    :store="dashboard.summary"
-                    :include-inbound="false"
-                    :is-summary="true"
-                    :settings="settings"
-                    :initial-cc-pct="dashboard.cc_baseline_pct"
-                    :display-unit="displayUnit"
-                  />
-                </v-card-text>
+                <v-expand-transition>
+                  <v-card-text v-show="isExpanded('summary')">
+                    <StoreCard
+                      :store="dashboard.summary"
+                      :include-inbound="false"
+                      :is-summary="true"
+                      :settings="settings"
+                      :initial-cc-pct="dashboard.cc_baseline_pct"
+                      :display-unit="displayUnit"
+                    />
+                  </v-card-text>
+                </v-expand-transition>
               </v-card>
 
               <!-- ─── Liquidity stats ─── -->
@@ -252,7 +257,10 @@
                    driven. Replaces the per-store inbound-liquidity row
                    that used to live on each StoreCard. -->
               <v-card v-if="dashboard.liquidity_stats" outlined class="mb-4">
-                <v-card-title>
+                <v-card-title @click="toggleSection('liquidity_stats')" class="section-toggle">
+                  <v-icon class="mr-2">
+                    {{ isExpanded('liquidity_stats') ? 'mdi-chevron-down' : 'mdi-chevron-right' }}
+                  </v-icon>
                   Liquidity stats
                   <v-chip
                     class="ml-3"
@@ -263,7 +271,8 @@
                     {{ dashboard.liquidity_stats.mode }}
                   </v-chip>
                 </v-card-title>
-                <v-card-text>
+                <v-expand-transition>
+                <v-card-text v-show="isExpanded('liquidity_stats')">
                   <p class="text-caption mb-2">
                     Per-wallet inbound and outbound liquidity (active
                     channels only). Only wallets named
@@ -320,13 +329,20 @@
                     </template>
                   </v-simple-table>
                 </v-card-text>
+                </v-expand-transition>
               </v-card>
 
               <!-- ─── Recent activity tables ─── -->
 
               <v-card outlined class="mb-4">
-                <v-card-title>Recent fee payments</v-card-title>
-                <v-card-text>
+                <v-card-title @click="toggleSection('recent_fee_payments')" class="section-toggle">
+                  <v-icon class="mr-2">
+                    {{ isExpanded('recent_fee_payments') ? 'mdi-chevron-down' : 'mdi-chevron-right' }}
+                  </v-icon>
+                  Recent fee payments
+                </v-card-title>
+                <v-expand-transition>
+                <v-card-text v-show="isExpanded('recent_fee_payments')">
                   <p class="text-caption mb-2">
                     Developer and hosting/setup fee payments across all
                     <code>liquidityhelper</code> wallets, newest first
@@ -406,11 +422,18 @@
                     </template>
                   </v-data-table>
                 </v-card-text>
+                </v-expand-transition>
               </v-card>
 
               <v-card outlined class="mb-4">
-                <v-card-title>Recent cashouts</v-card-title>
-                <v-card-text>
+                <v-card-title @click="toggleSection('recent_cashouts')" class="section-toggle">
+                  <v-icon class="mr-2">
+                    {{ isExpanded('recent_cashouts') ? 'mdi-chevron-down' : 'mdi-chevron-right' }}
+                  </v-icon>
+                  Recent cashouts
+                </v-card-title>
+                <v-expand-transition>
+                <v-card-text v-show="isExpanded('recent_cashouts')">
                   <p class="text-caption mb-2">
                     Cashout payments across all <code>liquidityhelper</code>
                     wallets, newest first (capped at 100 entries).
@@ -479,11 +502,18 @@
                     </template>
                   </v-data-table>
                 </v-card-text>
+                </v-expand-transition>
               </v-card>
 
               <v-card outlined class="mb-4">
-                <v-card-title>Recent channel closures</v-card-title>
-                <v-card-text>
+                <v-card-title @click="toggleSection('recent_channel_closures')" class="section-toggle">
+                  <v-icon class="mr-2">
+                    {{ isExpanded('recent_channel_closures') ? 'mdi-chevron-down' : 'mdi-chevron-right' }}
+                  </v-icon>
+                  Recent channel closures
+                </v-card-title>
+                <v-expand-transition>
+                <v-card-text v-show="isExpanded('recent_channel_closures')">
                   <p class="text-caption mb-2">
                     Channels the liquidity helper has closed (or initiated
                     closure of), newest first. The reason column explains why —
@@ -548,11 +578,18 @@
                     </template>
                   </v-data-table>
                 </v-card-text>
+                </v-expand-transition>
               </v-card>
 
               <v-card outlined class="mb-4">
-                <v-card-title>Recent LSP orders</v-card-title>
-                <v-card-text>
+                <v-card-title @click="toggleSection('recent_lsp_orders')" class="section-toggle">
+                  <v-icon class="mr-2">
+                    {{ isExpanded('recent_lsp_orders') ? 'mdi-chevron-down' : 'mdi-chevron-right' }}
+                  </v-icon>
+                  Recent LSP orders
+                </v-card-title>
+                <v-expand-transition>
+                <v-card-text v-show="isExpanded('recent_lsp_orders')">
                   <p class="text-caption mb-2">
                     LSP channel-order lifecycle, newest first.
                     <strong>State</strong>:
@@ -646,11 +683,18 @@
                     </template>
                   </v-data-table>
                 </v-card-text>
+                </v-expand-transition>
               </v-card>
 
               <v-card outlined class="mb-4">
-                <v-card-title>Recent network fees</v-card-title>
-                <v-card-text>
+                <v-card-title @click="toggleSection('recent_network_fees')" class="section-toggle">
+                  <v-icon class="mr-2">
+                    {{ isExpanded('recent_network_fees') ? 'mdi-chevron-down' : 'mdi-chevron-right' }}
+                  </v-icon>
+                  Recent network fees
+                </v-card-title>
+                <v-expand-transition>
+                <v-card-text v-show="isExpanded('recent_network_fees')">
                   <p class="text-caption mb-2">
                     Every transaction across all <code>liquidityhelper</code>
                     wallets that paid an on-chain miner fee or a Lightning
@@ -723,6 +767,7 @@
                     </template>
                   </v-data-table>
                 </v-card-text>
+                </v-expand-transition>
               </v-card>
             </div>
           </v-card-text>
@@ -1213,6 +1258,18 @@ export default {
       ],
       loadingDashboard: false,
       dashboardError: null,
+
+      // Collapsible-section state for the Dashboard tab. Each key
+      // identifies one section (Summary, Liquidity stats, the
+      // Recent-* tables, and per-store cards keyed by store_id).
+      // Defaults to {} = no key set; isExpanded() treats absence-of-
+      // key as "expanded" so newly-added sections automatically
+      // start expanded without the dashboard needing to enumerate
+      // every key. Per-tab UI preference — NOT persisted to
+      // localStorage; the operator's collapse choices reset on each
+      // page reload, which keeps the default-expanded contract
+      // unambiguous for first-time-after-deploy operators.
+      expandedSections: {},
       // Display-unit toggle. "sats" (default) or "btc". Initialized
       // from localStorage so the operator's preference survives a
       // reload. USD continues to render in parentheses regardless of
@@ -1744,6 +1801,19 @@ export default {
       if (type === "cashout") return "success"
       return "default"
     },
+    // Dashboard-tab collapsible sections. `isExpanded` returns true
+    // when a section's key has never been toggled OR was last
+    // toggled to expanded — sections default to OPEN. `toggleSection`
+    // flips one section's state. Vue 2's reactivity needs $set for
+    // a NEW key on the expandedSections object; once a key exists,
+    // direct assignment is reactive — so we use $set unconditionally
+    // (cheap, no harm if the key was already present).
+    isExpanded(key) {
+      return this.expandedSections[key] !== false
+    },
+    toggleSection(key) {
+      this.$set(this.expandedSections, key, !this.isExpanded(key))
+    },
     // Settings-tab support: return {count, settings, color} for the
     // given schema group. `count` is the number of distinct settings
     // in this group referenced by active dashboard.health_warnings.
@@ -2043,6 +2113,22 @@ export default {
 }
 .audit-reason-list li {
   font-size: 0.85em;
+}
+
+/* Clickable v-card-title used to toggle a section's collapse
+   state. Cursor + subtle hover-tint signal interactivity without
+   competing with the section title's visual weight. The chevron
+   icon inside flips between mdi-chevron-down (expanded) and
+   mdi-chevron-right (collapsed) via the template. */
+.section-toggle {
+  cursor: pointer;
+  user-select: none;
+}
+.section-toggle:hover {
+  background-color: rgba(0, 0, 0, 0.04);
+}
+.theme--dark .section-toggle:hover {
+  background-color: rgba(255, 255, 255, 0.06);
 }
 
 /* Totals row at the bottom of the Liquidity stats table. Bolded
