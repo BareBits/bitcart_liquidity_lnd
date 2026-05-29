@@ -1498,12 +1498,23 @@ export default {
         }
       },
     },
-    // Lazy-load the Debug tab on first open. Tab index 2 = Debug
-    // (after Dashboard, Settings). Loading on every switch would be
-    // redundant; loading only when the list is empty saves a request
-    // per tab-flip but keeps an explicit Refresh button available
-    // for re-fetching.
-    tab(newTab) {
+    // Tab-change side effects:
+    //   - Tab 0 = Dashboard: force-refresh whenever the operator
+    //     returns to it. The most common reason to leave Dashboard
+    //     is "I saw a warning, let me go fix it in Settings"; coming
+    //     back without a refresh would show the stale pre-save
+    //     health_warnings and net_fees rows. Pass `true` to bypass
+    //     the dashboard endpoint's 60s cache so a setting saved
+    //     seconds ago is reflected immediately. Skip the very-first
+    //     transition into Dashboard since mounted() already loaded
+    //     it; we'd be issuing a double-fetch in that case.
+    //   - Tab 2 = Debug: lazy-load on first open only. Loading on
+    //     every switch would be redundant for this slow-changing
+    //     surface; the tab has its own Refresh button.
+    tab(newTab, oldTab) {
+      if (newTab === 0 && oldTab !== undefined && !this.loadingDashboard) {
+        this.reloadDashboard(true)
+      }
       if (newTab === 2 && this.debugWallets.length === 0 && !this.loadingDebugWallets) {
         this.loadDebugWallets()
       }
