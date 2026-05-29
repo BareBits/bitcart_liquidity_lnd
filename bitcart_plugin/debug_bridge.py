@@ -44,10 +44,22 @@ _RUN_ONCE_CHANNEL = "liquidityhelper:debug_run_once"
 
 def _redis_url() -> str:
     """Derive the Redis URL from Bitcart's REDIS_HOST / REDIS_PORT /
-    REDIS_DB env vars. Same defaults as Bitcart's Settings class
-    (127.0.0.1:6379/0). Matches what bitcart-fork/api/settings.py
-    builds for `redis_url`, so the same connection works."""
-    host = os.environ.get("REDIS_HOST", "127.0.0.1")
+    REDIS_DB env vars.
+
+    Default host is "redis" — the docker-compose service name that
+    every bitcart container reaches via the compose network's DNS.
+    Bitcart's own `Settings` class defaults to 127.0.0.1, but it
+    only ever runs that way in standalone (non-container) deploys;
+    inside the standard bitcart-docker stack the containers have
+    `REDIS_HOST=redis` injected by docker-compose (or, as we
+    observed, neither set at all and rely on the service-name DNS
+    resolving to the redis container).
+
+    Using 127.0.0.1 as the default would have the worker container
+    try to connect to its OWN loopback (where nothing listens) and
+    fail with `Connect call failed ('127.0.0.1', 6379)`.
+    """
+    host = os.environ.get("REDIS_HOST", "redis")
     port = os.environ.get("REDIS_PORT", "6379")
     db = os.environ.get("REDIS_DB", "0")
     return f"redis://{host}:{port}/{db}"
