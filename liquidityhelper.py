@@ -9286,8 +9286,33 @@ def trigger_debug_run_once() -> None:
     """Fire one debug-mode tick. Safe to call from any thread or any
     coroutine context — asyncio.Event.set() is loop-thread-safe in
     Python 3.10+. No-op when DEBUG_MODE is False (the run_tick_loop
-    won't be waiting on this trigger in that case)."""
+    won't be waiting on this trigger in that case).
+
+    Sets the local-process Event AND publishes to Redis so the
+    signal crosses the backend↔worker process boundary. In production
+    Bitcart, the HTTP endpoint that calls this function runs in the
+    backend process, while run_tick_loop awaits the trigger in the
+    worker process — without the pub/sub leg, the local set() would
+    fire backend's Event (nobody listening) and worker's Event would
+    stay forever unset. The publish is fire-and-forget: if Redis is
+    unreachable, we just rely on the local set() (which still works
+    correctly in standalone single-process runs)."""
     _debug_run_once_trigger.set()
+    # Publish from a separate task so this remains a sync function —
+    # the HTTP handler calling us isn't awaiting publish completion,
+    # and most callers (settings hooks, tests) don't even have a
+    # running loop. asyncio.get_running_loop() raises if there's no
+    # current loop; in that case we silently skip the publish (the
+    # local set() above is the meaningful action in standalone mode).
+    try:
+        from bitcart_plugin.debug_bridge import publish_debug_run_once
+        loop = asyncio.get_running_loop()
+        loop.create_task(publish_debug_run_once())
+    except (ImportError, RuntimeError):
+        # ImportError: standalone runs without the plugin tree on path.
+        # RuntimeError: no running loop (called from a sync test).
+        # Both are non-fatal — the local set() above covers it.
+        pass
 
 
 async def run_tick_loop(stop_event: Optional[asyncio.Event] = None) -> None:

@@ -496,6 +496,43 @@ class Plugin(BasePlugin):
         )
         self._loop_task.add_done_callback(self._on_tick_loop_done)
 
+        # Cross-process bridge for the debug-mode "Run one tick"
+        # button. The HTTP endpoint runs in the backend process and
+        # sets the trigger Event there — but the tick loop awaits
+        # the SAME-NAMED Event in this worker process, which is a
+        # distinct module-level object. Without this subscriber, the
+        # button does nothing visible: backend's Event.set() falls
+        # into the void, worker's Event stays unset, run_tick_loop
+        # never wakes, and PyCharm breakpoints inside main() never
+        # fire. The subscriber connects to bitcart's Redis (same
+        # docker-compose service used elsewhere by bitcart) and sets
+        # the local trigger whenever a message arrives on the
+        # liquidityhelper:debug_run_once channel.
+        async def _on_debug_run_once_signal() -> None:
+            # set() is safe to call from inside an asyncio callback;
+            # it just flips the Event flag. Any task currently
+            # awaiting it wakes on the next event loop iteration.
+            liquidityhelper._debug_run_once_trigger.set()
+
+        try:
+            from bitcart_plugin.debug_bridge import subscribe_debug_run_once
+            self._debug_sub_task = asyncio.create_task(
+                subscribe_debug_run_once(
+                    _on_debug_run_once_signal,
+                    stop_event=self._stop_event,
+                ),
+                name=f"{self.name}.debug_run_once_subscriber",
+            )
+        except ImportError:
+            # debug_bridge import failed (older deploy that pre-dates
+            # this file existing). Worker still runs the tick loop;
+            # the debug button just won't work until next deploy.
+            logger.warning(
+                "plugin worker_setup: debug_bridge unavailable; the "
+                "'Run one tick' button in the Logs tab will be a no-op "
+                "until the next deploy includes bitcart_plugin/debug_bridge.py"
+            )
+
     def _on_tick_loop_done(self, task: "asyncio.Task[None]") -> None:
         """Restart the tick loop if it ended with an exception.
         Cancellation (cooperative shutdown) and clean exits
