@@ -1807,6 +1807,7 @@ export default {
       return this.streams.map((s) => ({
         text:
           s.name === "operational" ? "Operational (full firehose)"
+          : s.name === "info" ? "Events (INFO+ only, longer retention)"
           : s.name === "decisions" ? "Decisions (audit log)"
           : s.name,
         value: s.name,
