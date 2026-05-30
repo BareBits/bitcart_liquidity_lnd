@@ -398,11 +398,18 @@ def maybe_attach_pycharm_debugger() -> None:
         )
         return
     try:
-        pydevd_pycharm.settrace(
-            host, port=port,
-            stdoutToServer=True, stderrToServer=True,
-            suspend=False,
-        )
+        # JetBrains dropped stdoutToServer/stderrToServer from
+        # pydevd_pycharm.settrace in the 2024.2-era (252.x+) builds —
+        # console redirection is negotiated post-attach now. Pass them
+        # only if the installed signature still accepts them so we work
+        # against both old and new debugger packages without TypeError.
+        settrace_kwargs = {"port": port, "suspend": False}
+        sig_params = inspect.signature(pydevd_pycharm.settrace).parameters
+        if "stdoutToServer" in sig_params:
+            settrace_kwargs["stdoutToServer"] = True
+        if "stderrToServer" in sig_params:
+            settrace_kwargs["stderrToServer"] = True
+        pydevd_pycharm.settrace(host, **settrace_kwargs)
         logger.info(
             f"Attached to PyCharm debugger at {host}:{port} "
             f"(set breakpoints in PyCharm to step through code)"
