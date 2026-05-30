@@ -390,11 +390,26 @@ def maybe_attach_pycharm_debugger() -> None:
     try:
         import pydevd_pycharm  # type: ignore
     except ImportError:
+        # Common root cause: the launch wrapper pip-installed
+        # pydevd-pycharm into a different Python env than the one
+        # bitcart actually executes from (e.g. installed into the
+        # backend container but this warning is firing from the worker
+        # container, or installed into system python but bitcart runs
+        # from a venv). Surface BOTH paths so the operator can compare:
+        # `sys.executable` is the running interpreter; `sys.prefix` is
+        # its env root. Cross-check those against `pip show
+        # pydevd-pycharm` in whichever shell the launcher ran in.
         logger.warning(
             "PYCHARM_DEBUG_HOST is set but pydevd_pycharm is not "
             "installed in this Python environment — debugger attach "
             "skipped. The launch wrapper should have installed the "
-            "version-matched package; check its output."
+            "version-matched package; check its output. "
+            "Diagnostics: sys.executable=%s sys.prefix=%s "
+            "sys.version=%s. To install manually, run: "
+            "%s -m pip install pydevd-pycharm~=<PyCharm build, e.g. 252.23892.515>",
+            sys.executable, sys.prefix,
+            sys.version.split()[0],
+            sys.executable,
         )
         return
     try:

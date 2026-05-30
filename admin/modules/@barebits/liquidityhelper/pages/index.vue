@@ -371,8 +371,9 @@
                     channels only). Only wallets named
                     <code>liquidityhelper</code> are counted — these are
                     the wallets the engine manages. The split bar shows
-                    outbound (left, primary) vs inbound (right, success)
-                    proportions; hover any segment for exact sats.
+                    outbound (right, ability to send funds) vs inbound
+                    (left, ability to receive funds) proportions; hover
+                    any segment for exact sats.
                   </p>
 
                   <!-- Empty-state -->
@@ -392,7 +393,21 @@
                     :key="w.wallet_id"
                     class="wallet-block mb-3"
                   >
-                    <div class="d-flex align-center flex-wrap mb-1">
+                    <!-- Per-wallet header is the collapse toggle.
+                         section-toggle gives the same hover affordance
+                         used by every other expand/collapse on this
+                         page; isExpanded keyed on "wallet_<id>" so
+                         each wallet remembers its own open/closed
+                         state independently. Default state is OPEN
+                         (isExpanded returns true for any key not
+                         explicitly toggled to false). -->
+                    <div
+                      class="d-flex align-center flex-wrap mb-1 section-toggle"
+                      @click="toggleSection('wallet_' + w.wallet_id)"
+                    >
+                      <v-icon class="mr-1" small>
+                        {{ isExpanded('wallet_' + w.wallet_id) ? 'mdi-chevron-down' : 'mdi-chevron-right' }}
+                      </v-icon>
                       <strong>{{ w.wallet_name }}</strong>
                       <span class="text-caption grey--text ml-1">({{ w.wallet_short }})</span>
                       <span class="text-caption ml-3">
@@ -409,6 +424,9 @@
                       </span>
                     </div>
 
+                    <v-expand-transition>
+                    <div v-show="isExpanded('wallet_' + w.wallet_id)">
+
                     <!-- Wallet aggregate split bar.
                          Two background segments side-by-side: the left
                          segment represents outbound (operator can send),
@@ -422,25 +440,25 @@
                       :title="balanceBarTitle(w.outbound.sats, w.inbound.sats)"
                     >
                       <div
-                        class="balance-bar-outbound"
-                        :style="{ width: balanceBarPct(w.outbound.sats, w.inbound.sats) + '%' }"
-                      ></div>
-                      <div
                         class="balance-bar-inbound"
                         :style="{ width: (100 - balanceBarPct(w.outbound.sats, w.inbound.sats)) + '%' }"
+                      ></div>
+                      <div
+                        class="balance-bar-outbound"
+                        :style="{ width: balanceBarPct(w.outbound.sats, w.inbound.sats) + '%' }"
                       ></div>
                     </div>
                     <div class="d-flex text-caption mt-1">
                       <span>
-                        <v-icon x-small color="primary">mdi-arrow-up</v-icon>
-                        Outbound:
-                        <MoneyDisplay :money="w.outbound" :unit="displayUnit" />
+                        <v-icon x-small color="success">mdi-arrow-down</v-icon>
+                        Inbound (receive):
+                        <MoneyDisplay :money="w.inbound" :unit="displayUnit" />
                       </span>
                       <v-spacer />
                       <span>
-                        <v-icon x-small color="success">mdi-arrow-down</v-icon>
-                        Inbound:
-                        <MoneyDisplay :money="w.inbound" :unit="displayUnit" />
+                        <v-icon x-small style="color: #f7931a">mdi-arrow-up</v-icon>
+                        Outbound (send):
+                        <MoneyDisplay :money="w.outbound" :unit="displayUnit" />
                       </span>
                     </div>
 
@@ -478,18 +496,18 @@
                                   :title="balanceBarTitle(ch.local_balance, ch.remote_balance)"
                                 >
                                   <div
-                                    class="balance-bar-outbound"
-                                    :style="{ width: balanceBarPct(ch.local_balance, ch.remote_balance) + '%' }"
-                                  ></div>
-                                  <div
                                     class="balance-bar-inbound"
                                     :style="{ width: (100 - balanceBarPct(ch.local_balance, ch.remote_balance)) + '%' }"
                                   ></div>
+                                  <div
+                                    class="balance-bar-outbound"
+                                    :style="{ width: balanceBarPct(ch.local_balance, ch.remote_balance) + '%' }"
+                                  ></div>
                                 </div>
                                 <div class="text-caption d-flex">
-                                  <span><MoneyDisplay :sats="ch.local_balance" :usd="null" :unit="displayUnit" /></span>
-                                  <v-spacer />
                                   <span><MoneyDisplay :sats="ch.remote_balance" :usd="null" :unit="displayUnit" /></span>
+                                  <v-spacer />
+                                  <span><MoneyDisplay :sats="ch.local_balance" :usd="null" :unit="displayUnit" /></span>
                                 </div>
                               </td>
                               <td class="text-right text-caption">
@@ -509,6 +527,8 @@
                     >
                       No active channels.
                     </p>
+                    </div>
+                    </v-expand-transition>
                   </div>
 
                   <!-- Aggregate totals across every wallet. Kept
@@ -521,14 +541,14 @@
                     <strong>Total across wallets:</strong>
                     <v-spacer />
                     <span class="ml-3">
-                      <v-icon x-small color="primary">mdi-arrow-up</v-icon>
-                      Outbound:
-                      <strong><MoneyDisplay :money="dashboard.liquidity_stats.total_outbound" :unit="displayUnit" /></strong>
-                    </span>
-                    <span class="ml-3">
                       <v-icon x-small color="success">mdi-arrow-down</v-icon>
                       Inbound:
                       <strong><MoneyDisplay :money="dashboard.liquidity_stats.total_inbound" :unit="displayUnit" /></strong>
+                    </span>
+                    <span class="ml-3">
+                      <v-icon x-small style="color: #f7931a">mdi-arrow-up</v-icon>
+                      Outbound:
+                      <strong><MoneyDisplay :money="dashboard.liquidity_stats.total_outbound" :unit="displayUnit" /></strong>
                     </span>
                     <span class="ml-3">
                       Channels: <strong>{{ dashboard.liquidity_stats.total_channel_count }}</strong>
@@ -2130,8 +2150,8 @@ export default {
     },
     balanceBarTitle(localSats, remoteSats) {
       const total = (Number(localSats) || 0) + (Number(remoteSats) || 0)
-      const pct = total > 0 ? ((Number(localSats) / total) * 100).toFixed(1) : "—"
-      return `Outbound ${this.formatNumber(localSats, 0)} sat / Inbound ${this.formatNumber(remoteSats, 0)} sat (outbound ${pct}%)`
+      const outPct = total > 0 ? ((Number(localSats) / total) * 100).toFixed(1) : "—"
+      return `Inbound (receive) ${this.formatNumber(remoteSats, 0)} sat / Outbound (send) ${this.formatNumber(localSats, 0)} sat (outbound ${outPct}%)`
     },
     // Heuristic: is `s` a Bitcoin address (vs an LN address / pubkey /
     // empty)? LN addresses contain '@' (user@domain), LN pubkeys are
@@ -2541,8 +2561,12 @@ export default {
 .balance-bar-sm {
   height: 10px;
 }
+/* Outbound = ability to send. Rendered in Bitcoin orange so the
+   bar's two halves are immediately distinguishable from each other
+   without consulting a legend. Inbound (ability to receive) stays
+   on Vuetify's success-green. */
 .balance-bar-outbound {
-  background: var(--v-primary-base, #1976d2);
+  background: #f7931a;
   height: 100%;
 }
 .balance-bar-inbound {
