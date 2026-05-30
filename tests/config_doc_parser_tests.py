@@ -24,6 +24,7 @@ from bitcart_plugin.config_doc_parser import (
     parse_config_source,
 )
 from bitcart_plugin.settings_schema import (
+    _HIDDEN_FROM_UI,
     PluginSettings,
     SETTING_NAMES,
     get_settings_groups,
@@ -264,6 +265,11 @@ def test_get_settings_groups_is_ordered_and_complete():
       - return groups in declaration order (not alphabetical),
       - include EVERY public setting exactly once,
       - have no empty groups.
+
+    Settings in _HIDDEN_FROM_UI are valid (in SETTING_NAMES, persisted
+    via the bridge) but intentionally omitted from the group list —
+    they're owned by higher-level widgets like the mode dropdown — so
+    they're excluded from the completeness check.
     """
     groups = get_settings_groups()
     seen: set[str] = set()
@@ -272,8 +278,8 @@ def test_get_settings_groups_is_ordered_and_complete():
         for n in names:
             assert n not in seen, f"setting {n!r} appears in multiple groups"
             seen.add(n)
-    # Every public schema field must be in some group.
-    missing = SETTING_NAMES - seen
+    # Every public, UI-eligible schema field must be in some group.
+    missing = (SETTING_NAMES - seen) - set(_HIDDEN_FROM_UI)
     assert not missing, f"settings not assigned to any group: {sorted(missing)}"
 
 

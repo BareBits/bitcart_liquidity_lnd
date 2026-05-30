@@ -484,6 +484,10 @@
                                 <span v-if="!ch.peer_pubkey" class="grey--text">—</span>
                                 <template v-else>
                                   {{ ch.peer_alias || "no name" }}
+                                  <span
+                                    v-if="channelLspName(ch)"
+                                    class="grey--text text--darken-1"
+                                  >({{ channelLspName(ch) }})</span>
                                   (<component
                                     :is="lnNodeComponent(ch.peer_pubkey)"
                                     v-bind="lnNodeProps(ch.peer_pubkey)"
@@ -514,7 +518,16 @@
                                 <MoneyDisplay :sats="ch.capacity" :usd="null" :unit="displayUnit" />
                               </td>
                               <td class="text-caption">
-                                {{ shortTxid(ch.channel_point) }}
+                                <a
+                                  v-if="channelPointUrl(ch.channel_point)"
+                                  :href="channelPointUrl(ch.channel_point)"
+                                  :title="ch.channel_point"
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                >{{ shortTxid(ch.channel_point) }}</a>
+                                <span v-else :title="ch.channel_point">
+                                  {{ shortTxid(ch.channel_point) }}
+                                </span>
                               </td>
                             </tr>
                           </tbody>
@@ -1054,6 +1067,63 @@
               Hover the question mark next to each setting for a description
               pulled directly from <code>config.py</code>.
             </p>
+
+            <!-- ──────────── Liquidity management mode ────────────
+                 Top-level dropdown that drives the underlying
+                 LIQUIDITY_DISABLED + MANUAL_CHANNEL_CREATION_ENABLED
+                 flags in one click. Those flags are excluded from the
+                 expansion-panel list below so this dropdown is the
+                 single authoritative entry point. -->
+            <v-card v-if="settingsLoaded" outlined class="mb-4 mode-card">
+              <v-card-text class="pa-3">
+                <div class="d-flex align-center flex-wrap">
+                  <span class="text-subtitle-2 mr-3">
+                    Liquidity management mode
+                  </span>
+                  <v-select
+                    v-model="liquidityModeUi"
+                    :items="liquidityModeOptions"
+                    :loading="liquidityModeSaving"
+                    :disabled="liquidityModeSaving"
+                    dense
+                    outlined
+                    hide-details
+                    style="max-width: 240px;"
+                    @change="onLiquidityModeChange"
+                  />
+                  <v-tooltip bottom max-width="420">
+                    <template #activator="{ on }">
+                      <v-icon
+                        small
+                        color="grey"
+                        class="ml-2"
+                        v-on="on"
+                      >mdi-help-circle-outline</v-icon>
+                    </template>
+                    <span>
+                      <strong>LSP</strong>: channel acquisition is delegated to
+                      Zeus or Megalithic over LSPS1 (default).
+                      <br>
+                      <strong>Manual</strong>: open channels yourself from a
+                      locally curated peer database.
+                      <br>
+                      <strong>Disabled</strong>: pause the tick loop entirely.
+                      Cashouts, fee payments, and channel creation all stop
+                      until the mode is changed back. Dashboard endpoints
+                      keep serving.
+                    </span>
+                  </v-tooltip>
+                  <v-spacer />
+                  <span
+                    v-if="liquidityModeSaveError"
+                    class="text-caption error--text ml-2"
+                  >
+                    {{ liquidityModeSaveError }}
+                  </span>
+                </div>
+              </v-card-text>
+            </v-card>
+
             <div v-if="settingsLoaded && schemaGroups.length">
               <!-- One v-expansion-panel per config.py group.
                    v-model="openSettingsPanels" is an ARRAY (multiple
@@ -1637,6 +1707,21 @@ export default {
       // Settings tab state.
       settings: {},
       settingsLoaded: false,
+      // Mode-dropdown UI state. liquidityModeUi is bound to the
+      // v-select; the read direction is computed from `settings` via
+      // syncLiquidityModeUi (called after every load and successful
+      // save). liquidityModeSaving gates the input + spinner during
+      // the round-trip; liquidityModeSaveError surfaces the last
+      // failure inline so the operator isn't left guessing why their
+      // change didn't stick.
+      liquidityModeUi: "lsp",
+      liquidityModeSaving: false,
+      liquidityModeSaveError: "",
+      liquidityModeOptions: [
+        { text: "LSP", value: "lsp" },
+        { text: "Manual", value: "manual" },
+        { text: "Disabled", value: "disabled" },
+      ],
       // schemaGroups comes from /api/plugins/liquidityhelper/settings/schema
       // and carries the parsed group + description for each setting.
       // Shape: [{group, settings: [{name, description, default}]}]
@@ -1833,6 +1918,7 @@ export default {
       this.settings = {}
       this.schemaGroups = []
     }
+    this.syncLiquidityModeUi()
     this.settingsLoaded = true
 
     // Load list of streams up front so the Logs tab is ready when
@@ -2108,6 +2194,80 @@ export default {
       const base = this.mempoolBase()
       if (!base || !txid) return null
       return `${base}/tx/${txid}`
+    },
+    // Channel point is "txid:vout"; mempool.space's /tx page shows the
+    // funding tx with all outputs visible, so we don't need the vout in
+    // the URL. Returns null when the network has no public explorer
+    // (regtest) or the channel_point is malformed.
+    channelPointUrl(channelPoint) {
+      if (!channelPoint) return null
+      const txid = String(channelPoint).split(":")[0]
+      return this.mempoolTxUrl(txid)
+    },
+    // Resolve the LSP provider name for a channel by joining its
+    // peer_pubkey against the lsp_provider_pubkeys map the backend
+    // ships in liquidity_stats. Empty string when there's no match
+    // (or the map is missing — happens on regtest / unknown network).
+    channelLspName(ch) {
+      if (!ch || !ch.peer_pubkey) return ""
+      const stats = this.dashboard && this.dashboard.liquidity_stats
+      const map = stats && stats.lsp_provider_pubkeys
+      if (!map) return ""
+      return map[String(ch.peer_pubkey).toLowerCase()] || ""
+    },
+    // Project the two underlying flags (LIQUIDITY_DISABLED +
+    // MANUAL_CHANNEL_CREATION_ENABLED) onto the three dropdown values.
+    // Disabled wins regardless of the manual flag — when paused, the
+    // engine isn't running either path anyway. Called after settings
+    // load + after each successful save.
+    syncLiquidityModeUi() {
+      const s = this.settings || {}
+      if (s.LIQUIDITY_DISABLED) {
+        this.liquidityModeUi = "disabled"
+      } else if (s.MANUAL_CHANNEL_CREATION_ENABLED) {
+        this.liquidityModeUi = "manual"
+      } else {
+        this.liquidityModeUi = "lsp"
+      }
+    },
+    // Inverse projection. Returns the partial settings dict to POST
+    // for a given dropdown value. Disabled preserves the operator's
+    // existing LSP/Manual choice on the other flag so flipping
+    // Disabled → LSP/Manual is a one-step revert.
+    liquidityModePayload(mode) {
+      if (mode === "disabled") {
+        return { LIQUIDITY_DISABLED: true }
+      }
+      if (mode === "manual") {
+        return {
+          LIQUIDITY_DISABLED: false,
+          MANUAL_CHANNEL_CREATION_ENABLED: true,
+        }
+      }
+      return {
+        LIQUIDITY_DISABLED: false,
+        MANUAL_CHANNEL_CREATION_ENABLED: false,
+      }
+    },
+    async onLiquidityModeChange(mode) {
+      const payload = this.liquidityModePayload(mode)
+      this.liquidityModeSaving = true
+      this.liquidityModeSaveError = ""
+      try {
+        await this.$axios.post("/plugins/settings/liquidityhelper", payload)
+        // Reflect into local state so a subsequent re-render of the
+        // mode card (or another setting save that re-syncs) sees the
+        // change without a full reload.
+        this.settings = { ...this.settings, ...payload }
+        this.syncLiquidityModeUi()
+      } catch (e) {
+        console.error("liquidity mode save failed", e)
+        this.liquidityModeSaveError = "Save failed — reload and retry."
+        // Revert the dropdown to whatever the stored state actually is.
+        this.syncLiquidityModeUi()
+      } finally {
+        this.liquidityModeSaving = false
+      }
     },
     mempoolAddrUrl(addr) {
       const base = this.mempoolBase()

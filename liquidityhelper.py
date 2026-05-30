@@ -9567,6 +9567,32 @@ async def run_tick_loop(stop_event: Optional[asyncio.Event] = None) -> None:
             # from config.py / env / user_config.py are authoritative.
             # Silently skip.
             pass
+        # Disabled gate. Re-read LIQUIDITY_DISABLED every iteration so
+        # the operator can flip the dashboard's mode dropdown to
+        # "Disabled" and have main() stop firing on the very next
+        # tick. We log once via log_decision (which dedupes), then
+        # wait 60s for either stop_event or the operator to re-enable.
+        # The dashboard endpoints (settings, liquidity stats, logs)
+        # continue to serve because they live in their own routers and
+        # don't depend on the tick.
+        if globals().get("LIQUIDITY_DISABLED"):
+            log_decision(
+                ("liquidity_disabled_waiting",), True,
+                "LIQUIDITY_DISABLED=True; tick loop is paused. "
+                "Set mode to LSP or Manual on the dashboard Settings "
+                "tab to resume.",
+            )
+            if stop_event is not None:
+                try:
+                    await asyncio.wait_for(stop_event.wait(), timeout=60)
+                except asyncio.TimeoutError:
+                    pass
+                if stop_event.is_set():
+                    return
+            else:
+                await asyncio.sleep(60)
+            continue
+
         # Debug gate. Re-read DEBUG_MODE every iteration so the
         # operator can toggle it live via the settings page without a
         # restart. When debug mode is on, block here until either:

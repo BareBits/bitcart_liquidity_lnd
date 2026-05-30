@@ -35,6 +35,7 @@ Safety:
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 import logging
 import time
@@ -239,6 +240,13 @@ class LiquidityStats(BaseModel):
     total_inbound: _Money
     total_outbound: _Money
     total_channel_count: int
+    # {lowercase_peer_pubkey: provider_name} for every URI the configured
+    # LSP providers (Zeus, Megalithic) advertise on the current network.
+    # Combines hardcoded fallbacks with the LSP's dynamic get_info.uris.
+    # Frontend joins this against each channel's peer_pubkey to render
+    # an inline "(zeus)" / "(megalithic)" tag next to the peer alias.
+    # Empty dict on regtest / unknown network or when providers fail.
+    lsp_provider_pubkeys: Dict[str, str] = {}
 
 
 class NetworkFeeRow(BaseModel):
@@ -964,20 +972,75 @@ async def _detect_bitcoin_network(api: Any) -> str:
 def _liquidity_mode_label() -> str:
     """Human-readable label for the current liquidity-management mode.
 
-    Reads MANUAL_CHANNEL_CREATION_ENABLED from config. Mirrors the
-    engine gate at liquidityhelper.move_onchain_to_ln (which short-
-    circuits when the flag is False, deferring channel creation to an
-    LSP). Defaults to the LSP label on any config-read failure so the
-    UI still renders.
+    Reads LIQUIDITY_DISABLED + MANUAL_CHANNEL_CREATION_ENABLED from
+    config. Mirrors the engine gates at liquidityhelper.run_tick_loop
+    (paused when LIQUIDITY_DISABLED) and move_onchain_to_ln (manual
+    vs LSP). Defaults to the LSP label on any config-read failure so
+    the UI still renders.
     """
     try:
         import config as _cfg
+        if bool(getattr(_cfg, "LIQUIDITY_DISABLED", False)):
+            return "Disabled (tick loop paused)"
         if bool(getattr(_cfg, "MANUAL_CHANNEL_CREATION_ENABLED", False)):
             return "Manual channel management"
         return "LSP-managed liquidity"
     except Exception as e:
         logger.warning(f"_liquidity_mode_label: config import failed: {e} {traceback.format_exc()}")
         return "LSP-managed liquidity"
+
+
+async def _build_lsp_pubkey_map(network: str) -> Dict[str, str]:
+    """Return {lowercase_pubkey: provider_name} for every URI advertised
+    by the configured LSP providers on `network`.
+
+    Combines the hardcoded fallback pubkeys from `network_endpoints`
+    with the dynamic URIs each provider exposes via `get_all_peer_uris`
+    (which itself caches `get_info().uris`). Best-effort: any provider
+    that raises or times out contributes only its static fallback.
+
+    Used by the dashboard to tag channels in the liquidity-stats panel
+    with the originating LSP. `network` of "" / regtest / unknown
+    returns an empty map — providers don't serve those.
+    """
+    if not network:
+        return {}
+    out: Dict[str, str] = {}
+    try:
+        from lsp_providers import get_lsp_providers
+    except Exception as e:
+        logger.debug(f"_build_lsp_pubkey_map: lsp_providers import failed: {e}")
+        return {}
+
+    def _record(uri: str, name: str) -> None:
+        # URI format is "pubkey@host:port"; we only care about the pubkey.
+        # Skip the UNKNOWN sentinel and any malformed entries.
+        if not uri or "@" not in uri or uri.startswith("UNKNOWN@"):
+            return
+        pk = uri.split("@", 1)[0].strip().lower()
+        if len(pk) == 66:  # 33-byte compressed pubkey, hex-encoded
+            out.setdefault(pk, name)
+
+    for provider in get_lsp_providers():
+        name = getattr(provider, "name", "lsp")
+        endpoint = getattr(provider, "network_endpoints", {}).get(network)
+        if endpoint is not None:
+            _record(getattr(endpoint, "lsp_peer_uri", ""), name)
+        # Dynamic — short timeout so a slow LSP can't stall dashboard
+        # render. get_all_peer_uris is per-provider-instance cached;
+        # the timeout only matters on the very first call.
+        try:
+            uris = await asyncio.wait_for(
+                provider.get_all_peer_uris(network=network), timeout=2.0,
+            )
+            for u in uris or []:
+                _record(u, name)
+        except Exception as e:
+            logger.debug(
+                f"_build_lsp_pubkey_map: {name} get_all_peer_uris "
+                f"on {network} skipped: {e}"
+            )
+    return out
 
 
 def _preferred_cashout_summary() -> Optional[CashoutSummary]:
@@ -1201,6 +1264,7 @@ async def _resolve_aliases_for_pubkeys(
 async def build_liquidity_stats(
     api: Any, btc_usd_rate: Optional[float],
     wallet_to_store_names: Optional[Dict[str, List[str]]] = None,
+    bitcoin_network: str = "",
 ) -> LiquidityStats:
     """Walk every liquidityhelper-named wallet, collect per-wallet
     inbound/outbound/channel-count stats + per-channel breakdown,
@@ -1286,12 +1350,15 @@ async def build_liquidity_stats(
             store_names=sorted(name_map.get(wid, [])),
         ))
 
+    lsp_provider_pubkeys = await _build_lsp_pubkey_map(bitcoin_network)
+
     return LiquidityStats(
         mode=mode,
         wallets=rows,
         total_inbound=_money(total_inbound, btc_usd_rate),
         total_outbound=_money(total_outbound, btc_usd_rate),
         total_channel_count=total_channels,
+        lsp_provider_pubkeys=lsp_provider_pubkeys,
     )
 
 
@@ -2085,10 +2152,11 @@ async def compute_dashboard(api: Any, range_key: str) -> DashboardResponse:
     recent_channel_closures = list_recent_channel_closures(closure_peer_map)
     recent_lsp_orders = list_recent_lsp_orders(btc_usd_rate)
     recent_network_fees = await list_recent_network_fees(api, btc_usd_rate)
+    bitcoin_network = await _detect_bitcoin_network(api)
     liquidity_stats = await build_liquidity_stats(
         api, btc_usd_rate, wallet_to_store_names=wallet_to_store_names,
+        bitcoin_network=bitcoin_network,
     )
-    bitcoin_network = await _detect_bitcoin_network(api)
 
     # Health audit: pure-config checks (cashout/channel/reserve/loop
     # config sanity) + one dynamic check (LN cashouts stale while LN

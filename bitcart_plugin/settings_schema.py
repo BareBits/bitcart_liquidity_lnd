@@ -55,6 +55,21 @@ from .config_doc_parser import parse_config_module
 # Settings INTENTIONALLY hidden from the admin UI. Curated, with a
 # one-line justification so a future reader sees WHY each is excluded.
 # Adding to this set requires no other code change.
+# Settings that are valid (still persisted, still applied by the
+# settings_bridge) but should NOT appear in the schema-groups expansion
+# panels — typically because a higher-level widget owns them. The
+# dashboard Settings tab's "Liquidity management mode" dropdown is the
+# authoritative entry point for these.
+_HIDDEN_FROM_UI: Dict[str, str] = {
+    "MANUAL_CHANNEL_CREATION_ENABLED": (
+        "owned by the Liquidity management mode dropdown"
+    ),
+    "LIQUIDITY_DISABLED": (
+        "owned by the Liquidity management mode dropdown"
+    ),
+}
+
+
 _EXCLUDED: Dict[str, str] = {
     # Transaction-label constants. Changing them after deploy orphans
     # all existing label-tagged history rows the dashboard reads.
@@ -192,6 +207,8 @@ def get_settings_groups() -> List[Tuple[str, List[str]]]:
     grouped: "OrderedDict[str, List[str]]" = OrderedDict()
     for name, info in parsed.items():
         if name in _EXCLUDED:
+            continue
+        if name in _HIDDEN_FROM_UI:
             continue
         if name not in SETTING_NAMES:
             continue

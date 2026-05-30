@@ -269,6 +269,82 @@ def test_run_tick_loop_respects_single_run(monkeypatch, event_loop):
     assert len(ticks) == 1
 
 
+def test_run_tick_loop_skips_main_when_liquidity_disabled(monkeypatch, event_loop):
+    """When LIQUIDITY_DISABLED=True the loop must NOT call main(); it
+    should block on the stop_event-aware wait so shutdown is still
+    prompt. Pins the dropdown-driven pause behavior."""
+    import liquidityhelper
+
+    stop = asyncio.Event()
+    ticks = {"n": 0}
+
+    async def fake_main():
+        ticks["n"] += 1
+
+    # Patch the per-iteration wait so the test doesn't sleep 60s — when
+    # disabled, run_tick_loop awaits this with a timeout. We trigger
+    # the stop event from inside the wait so the loop exits cleanly.
+    real_wait_for = asyncio.wait_for
+
+    async def short_wait_for(awaitable, timeout):
+        # The first time we land here is the disabled-mode wait — fire
+        # stop and return immediately so the loop exits.
+        stop.set()
+        return await real_wait_for(awaitable, timeout=0.1)
+
+    monkeypatch.setattr(liquidityhelper, "main", fake_main)
+    monkeypatch.setattr(liquidityhelper, "LIQUIDITY_DISABLED", True)
+    monkeypatch.setattr(liquidityhelper.asyncio, "wait_for", short_wait_for)
+
+    try:
+        event_loop.run_until_complete(
+            asyncio.wait_for(
+                liquidityhelper.run_tick_loop(stop_event=stop), timeout=2
+            )
+        )
+        assert ticks["n"] == 0
+    finally:
+        liquidityhelper.LIQUIDITY_DISABLED = False
+
+
+def test_run_tick_loop_resumes_when_liquidity_re_enabled(monkeypatch, event_loop):
+    """Flipping LIQUIDITY_DISABLED False mid-loop must let main() fire
+    on the next iteration. Mirrors what the bridge does when the
+    operator changes the dropdown back to LSP/Manual."""
+    import liquidityhelper
+
+    stop = asyncio.Event()
+    ticks = {"n": 0}
+
+    async def fake_main():
+        ticks["n"] += 1
+        # Stop after the first actual tick so the test bounds.
+        stop.set()
+
+    # Start disabled; flip enabled from inside the short_wait_for so
+    # the second iteration goes through the main() path.
+    monkeypatch.setattr(liquidityhelper, "main", fake_main)
+    monkeypatch.setattr(liquidityhelper, "LIQUIDITY_DISABLED", True)
+
+    real_wait_for = asyncio.wait_for
+
+    async def short_wait_for(awaitable, timeout):
+        liquidityhelper.LIQUIDITY_DISABLED = False
+        return await real_wait_for(awaitable, timeout=0.05)
+
+    monkeypatch.setattr(liquidityhelper.asyncio, "wait_for", short_wait_for)
+
+    try:
+        event_loop.run_until_complete(
+            asyncio.wait_for(
+                liquidityhelper.run_tick_loop(stop_event=stop), timeout=2
+            )
+        )
+        assert ticks["n"] == 1
+    finally:
+        liquidityhelper.LIQUIDITY_DISABLED = False
+
+
 def test_run_tick_loop_picks_up_live_single_run_flip(monkeypatch, event_loop):
     """If the plugin's settings_changed hook flips SINGLE_RUN mid-loop,
     we honor it on the next iteration boundary. Pins the

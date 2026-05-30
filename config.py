@@ -381,6 +381,28 @@ REFERRAL_SWITCH_TO_ONCHAIN_AFTER_X_DAYS: Optional[int] = 30
 
 
 # =============================================================================
+# === Liquidity management mode ===
+# =============================================================================
+#
+# Operator-facing top-level switch. The dashboard Settings tab renders a
+# single dropdown ("LSP / Manual / Disabled") that writes through to
+# LIQUIDITY_DISABLED + MANUAL_CHANNEL_CREATION_ENABLED (the latter lives
+# in the LSP-funded block below). Both flags are hidden from the
+# expansion-panel UI so the dropdown is the only authoritative entry
+# point; they remain valid settings for env-var / user_config.py
+# overrides.
+
+# When True the entire tick loop is paused: run_tick_loop skips its
+# call to main() each iteration and sleeps until either the operator
+# flips this back to False or the plugin shuts down. Cashouts, fee
+# payments, channel creation, topup notifications — everything in
+# main() is gated by this. Dashboard endpoints (liquidity stats,
+# settings, logs) continue to serve normally so the operator can
+# diagnose and re-enable. Default False (engine runs).
+LIQUIDITY_DISABLED: bool = False
+
+
+# =============================================================================
 # === LSP-funded inbound liquidity ===
 # =============================================================================
 #
