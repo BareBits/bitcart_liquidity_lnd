@@ -33,11 +33,15 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query, Security
 from pydantic import BaseModel
 
-# These two stream names are the ONLY valid values. Mapping is set up by
+# These stream names are the ONLY valid values. Mapping is set up by
 # install_plugin_log_sinks() at plugin startup.
 STREAM_OPERATIONAL = "operational"
+# INFO+ slice of the operational stream. Same content as
+# STREAM_OPERATIONAL minus DEBUG records, rotated with a much larger
+# backupCount so non-debug history survives the firehose's churn.
+STREAM_INFO = "info"
 STREAM_DECISIONS = "decisions"
-STREAMS: tuple[str, ...] = (STREAM_OPERATIONAL, STREAM_DECISIONS)
+STREAMS: tuple[str, ...] = (STREAM_OPERATIONAL, STREAM_INFO, STREAM_DECISIONS)
 
 # Filled in by install_plugin_log_sinks(); maps stream-name → absolute
 # path to its current log file. Pre-resolved so the endpoint never has
@@ -101,6 +105,7 @@ def install_plugin_log_sinks(data_dir: str) -> None:
     os.makedirs(data_dir, exist_ok=True)
 
     operational_path = os.path.join(data_dir, "liquidityhelper.log")
+    info_path = os.path.join(data_dir, "liquidityhelper-info.log")
     decisions_path = os.path.join(data_dir, "decisions.log")
 
     # Idempotence: tag our handlers so reloads don't double-add. We look
@@ -120,6 +125,23 @@ def install_plugin_log_sinks(data_dir: str) -> None:
         h_main._plugin_sink = "operational"   # type: ignore[attr-defined]
         add_async_log_handler(h_main)
 
+    if "info" not in existing:
+        # INFO+ slice with much higher retention. Same filter as
+        # "operational" (decisions excluded) but the level gate drops
+        # DEBUG. 25 MB × 20 backups ≈ 500 MB cap — weeks of non-debug
+        # history vs the firehose's ~50 MB / 1-2-day window.
+        h_info = RotatingFileHandler(
+            info_path, maxBytes=25_000_000, backupCount=20
+        )
+        h_info.setLevel(logging.INFO)
+        h_info.setFormatter(logging.Formatter(
+            "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        ))
+        h_info.addFilter(_NotDecisionsFilter())
+        h_info._plugin_sink = "info"   # type: ignore[attr-defined]
+        add_async_log_handler(h_info)
+
     if "decisions" not in existing:
         h_dec = RotatingFileHandler(
             decisions_path, maxBytes=10_000_000, backupCount=10
@@ -133,6 +155,7 @@ def install_plugin_log_sinks(data_dir: str) -> None:
         add_async_log_handler(h_dec)
 
     _STREAM_PATHS[STREAM_OPERATIONAL] = operational_path
+    _STREAM_PATHS[STREAM_INFO] = info_path
     _STREAM_PATHS[STREAM_DECISIONS] = decisions_path
 
 

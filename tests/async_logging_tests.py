@@ -39,15 +39,15 @@ def test_loggers_only_have_queue_handler():
     assert [type(h).__name__ for h in dec.handlers] == ["QueueHandler"]
 
 
-def test_listener_has_all_three_sinks_at_import():
+def test_listener_has_all_sinks_at_import():
     """At module import time, the listener must own file_handler,
-    _decisions_file_handler, and console_handler. Tests that touch
-    listener.handlers (like plugin_log_endpoints_tests) rely on this
-    baseline shape."""
+    _info_file_handler, _decisions_file_handler, and console_handler.
+    Tests that touch listener.handlers (like plugin_log_endpoints_tests)
+    rely on this baseline shape."""
     handlers = liquidityhelper.listener.handlers
     classnames = [type(h).__name__ for h in handlers]
     # Order matters for clarity but isn't a hard contract; check membership.
-    assert classnames.count("RotatingFileHandler") == 2
+    assert classnames.count("RotatingFileHandler") == 3
     assert classnames.count("StreamHandler") == 1
 
 

@@ -28,6 +28,7 @@ from bitcart_plugin.log_endpoints import (
     DEFAULT_TAIL_LINES,
     MAX_TAIL_LINES,
     STREAM_DECISIONS,
+    STREAM_INFO,
     STREAM_OPERATIONAL,
     build_router,
     install_plugin_log_sinks,
@@ -93,6 +94,9 @@ def test_install_plugin_log_sinks_resolves_paths(temp_data_dir):
     assert log_endpoints._STREAM_PATHS[STREAM_OPERATIONAL] == os.path.join(
         temp_data_dir, "liquidityhelper.log"
     )
+    assert log_endpoints._STREAM_PATHS[STREAM_INFO] == os.path.join(
+        temp_data_dir, "liquidityhelper-info.log"
+    )
     assert log_endpoints._STREAM_PATHS[STREAM_DECISIONS] == os.path.join(
         temp_data_dir, "decisions.log"
     )
@@ -117,15 +121,16 @@ def test_install_plugin_log_sinks_is_idempotent(temp_data_dir):
 # /streams
 # ---------------------------------------------------------------------------
 
-def test_streams_lists_both_streams_when_empty(client):
-    """Both streams report exists=True with size_bytes=0 immediately
-    after install_plugin_log_sinks — RotatingFileHandler eagerly creates
-    the target file on construction. The UI distinguishes 'no log yet'
-    from 'log present' via size_bytes, not exists."""
+def test_streams_lists_all_streams_when_empty(client):
+    """All three streams report exists=True with size_bytes=0
+    immediately after install_plugin_log_sinks — RotatingFileHandler
+    eagerly creates the target file on construction. The UI
+    distinguishes 'no log yet' from 'log present' via size_bytes,
+    not exists."""
     resp = client.get("/api/plugins/liquidityhelper/logs/streams")
     assert resp.status_code == 200
     names = {s["name"] for s in resp.json()}
-    assert names == {STREAM_OPERATIONAL, STREAM_DECISIONS}
+    assert names == {STREAM_OPERATIONAL, STREAM_INFO, STREAM_DECISIONS}
     for s in resp.json():
         assert s["exists"] is True
         assert s["size_bytes"] == 0
@@ -142,9 +147,40 @@ def test_streams_reports_file_size_after_write(client, temp_data_dir):
     payload = {s["name"]: s for s in resp.json()}
     assert payload[STREAM_OPERATIONAL]["exists"] is True
     assert payload[STREAM_OPERATIONAL]["size_bytes"] == len("hello world\n")
-    # Decisions file was created by install but never written to.
+    # The other two files were created by install but never written to.
+    assert payload[STREAM_INFO]["exists"] is True
+    assert payload[STREAM_INFO]["size_bytes"] == 0
     assert payload[STREAM_DECISIONS]["exists"] is True
     assert payload[STREAM_DECISIONS]["size_bytes"] == 0
+
+
+def test_info_sink_captures_info_but_not_debug(temp_data_dir):
+    """The new INFO+ sink must record INFO/WARNING/ERROR and reject
+    DEBUG. Pins the level-gate contract that gives the file its much
+    longer effective retention. Decisions are still excluded.
+    """
+    import logging
+    from liquidityhelper import listener as engine_listener, logger, decisions_logger
+
+    # Emit one of each through the engine's own loggers and flush.
+    logger.debug("debug-line-should-not-appear")
+    logger.info("info-line-should-appear")
+    logger.warning("warning-line-should-appear")
+    decisions_logger.info("decision-line-should-not-appear-in-info-file")
+
+    # QueueListener fans records off-thread; stopping forces drain.
+    engine_listener.stop()
+    try:
+        info_path = os.path.join(temp_data_dir, "liquidityhelper-info.log")
+        with open(info_path, "r", encoding="utf-8") as f:
+            contents = f.read()
+    finally:
+        engine_listener.start()
+
+    assert "info-line-should-appear" in contents
+    assert "warning-line-should-appear" in contents
+    assert "debug-line-should-not-appear" not in contents
+    assert "decision-line-should-not-appear-in-info-file" not in contents
 
 
 # ---------------------------------------------------------------------------

@@ -65,20 +65,30 @@ import hashlib
 # ---------------------------------------------------------------------------
 # Logging setup
 #
-# Three sinks:
-#   - liquidityhelper.log : the operational firehose. Everything DEBUG and
-#                           above. Rotated at 10 MB × 5. Read this when
-#                           diagnosing an incident.
-#   - decisions.log       : a higher-level audit of what the script actually
-#                           DID and DECIDED. Routed via the
-#                           `liquidityhelper.decisions` child logger (see
-#                           log_event / log_decision below). Rotated at
-#                           10 MB × 10 so you can usually find any decision
-#                           from the last several months. Read this when
-#                           asking "what happened?", not "why did X fail?".
-#   - stdout              : live tail. INFO and above; never DEBUG. Per the
-#                           operational rule that debug detail lives only
-#                           in the log files.
+# Four sinks:
+#   - liquidityhelper.log      : the operational firehose. Everything DEBUG
+#                                and above. Rotated at 10 MB × 5. Read this
+#                                when diagnosing an incident — the
+#                                surrounding DEBUG context lives here.
+#   - liquidityhelper-info.log : the same stream but at INFO and above only,
+#                                rotated at 25 MB × 20 (≈500 MB cap) so
+#                                non-debug history sticks around far longer
+#                                than the firehose's ~50 MB window. Read
+#                                this when asking "what's been happening
+#                                over the last few weeks?". Identical
+#                                filtering otherwise — decisions still go
+#                                to their own file.
+#   - decisions.log            : a higher-level audit of what the script
+#                                actually DID and DECIDED. Routed via the
+#                                `liquidityhelper.decisions` child logger
+#                                (see log_event / log_decision below).
+#                                Rotated at 10 MB × 10 so you can usually
+#                                find any decision from the last several
+#                                months. Read this when asking "what
+#                                happened?", not "why did X fail?".
+#   - stdout                   : live tail. INFO and above; never DEBUG.
+#                                Per the operational rule that debug detail
+#                                lives only in the log files.
 #
 # All three sinks are dispatched from a single QueueListener running on a
 # background thread. Loggers' only attached handler is a QueueHandler that
@@ -165,6 +175,7 @@ _PLUGIN_MODE = bool(os.environ.get("BITCART_ENV"))
 # equivalents. Keeping these as module-level names so add_async_log_handler
 # users can still reference them; they'll just be None in plugin mode.
 file_handler: Optional[RotatingFileHandler] = None
+_info_file_handler: Optional[RotatingFileHandler] = None
 _decisions_file_handler: Optional[RotatingFileHandler] = None
 if not _PLUGIN_MODE:
     file_handler = RotatingFileHandler(
@@ -174,6 +185,18 @@ if not _PLUGIN_MODE:
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(main_formatter)
     file_handler.addFilter(_NotDecisionsFilter())
+
+    # INFO+ slice with much higher retention. Same filter as the firehose
+    # (decisions excluded) but the level gate drops DEBUG. ~500 MB cap
+    # gives the operator weeks of WARN/INFO history vs the firehose's
+    # ~50 MB / 1-2-day window.
+    _info_file_handler = RotatingFileHandler(
+        os.path.join(_ENGINE_LOG_DIR, "liquidityhelper-info.log"),
+        maxBytes=25_000_000, backupCount=20,
+    )
+    _info_file_handler.setLevel(logging.INFO)
+    _info_file_handler.setFormatter(main_formatter)
+    _info_file_handler.addFilter(_NotDecisionsFilter())
 
     _decisions_file_handler = RotatingFileHandler(
         os.path.join(_ENGINE_LOG_DIR, "decisions.log"),
@@ -195,7 +218,7 @@ console_handler.setFormatter(main_formatter)
 # attached handlers on a background thread. respect_handler_level=True
 # so each handler still applies its own level filter at dispatch time.
 log_queue: "queue.Queue[Any]" = queue.Queue(2000)
-_listener_handlers = [h for h in (file_handler, _decisions_file_handler, console_handler) if h is not None]
+_listener_handlers = [h for h in (file_handler, _info_file_handler, _decisions_file_handler, console_handler) if h is not None]
 listener = logging.handlers.QueueListener(
     log_queue,
     *_listener_handlers,
