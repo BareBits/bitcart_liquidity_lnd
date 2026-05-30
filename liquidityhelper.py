@@ -6051,20 +6051,23 @@ async def calculate_topups(
             )
             logger.info(f"If Bitcart Admin is paying: {own_invoice}")
             logger.info(f"If BareBits is paying: {bb_invoice}")
-            for notifier in NOTIFICATION_PROVIDERS:
-                body = f"""
-                Warning: your wallet on store {store['name']} (wallet id {fetched_wallet['id']}) does not have sufficient inbound liquidity. This does not need to be immediately remedied, but we suggest doing so for the best performance from your Bitcart installation.
-                
-                Insufficient inbound liquidity can result in your customers not being able to make payments with Bitcoin lightning (higher fees, slower payments). On-chain payments will continue to work. Additionally, while liquidity is too low, your Bitcart installation will hold onto on-chain payments until additional liquidity can be created, which delays the time between when you receive payments and when they are delivered to you.
-
-                To remedy this, send {sats_to_btc(amount_remaining)} BTC to this address {own_invoice}
-
-                Once your funds have been received by your Bitcart installation, they will be sent right back to you at {CASHOUT_LIGHTNING_ADDRESS} minus some minor transaction fees for channel creation.
-
-                If you do not deposit more funds for liquidity, on-chain payments from customers will accumulate until sufficient liquidity is re-established. Once that has happened, those on-chain payments will be delivered to {CASHOUT_LIGHTNING_ADDRESS} minus fees.
-                """
-                subject=f"Warning: low liquidity on your Bitcart store {store['name']}"
-                await run_every_x_days(my_func=notifier.notify,days=30,body=body,subject=subject)
+            if NOTIFICATION_PROVIDERS:
+                for notifier in NOTIFICATION_PROVIDERS:
+                    body = f"""
+                    Warning: your wallet on store {store['name']} (wallet id {fetched_wallet['id']}) does not have sufficient inbound liquidity. This does not need to be immediately remedied, but we suggest doing so for the best performance from your Bitcart installation.
+                    
+                    Insufficient inbound liquidity can result in your customers not being able to make payments with Bitcoin lightning (higher fees, slower payments). On-chain payments will continue to work. Additionally, while liquidity is too low, your Bitcart installation will hold onto on-chain payments until additional liquidity can be created, which delays the time between when you receive payments and when they are delivered to you.
+    
+                    To remedy this, send {sats_to_btc(amount_remaining)} BTC to this address {own_invoice}
+    
+                    Once your funds have been received by your Bitcart installation, they will be sent right back to you at {CASHOUT_LIGHTNING_ADDRESS} minus some minor transaction fees for channel creation.
+    
+                    If you do not deposit more funds for liquidity, on-chain payments from customers will accumulate until sufficient liquidity is re-established. Once that has happened, those on-chain payments will be delivered to {CASHOUT_LIGHTNING_ADDRESS} minus fees.
+                    """
+                    subject=f"Warning: low liquidity on your Bitcart store {store['name']}"
+                    await run_every_x_days(my_func=notifier.notify,days=30,body=body,subject=subject)
+            else:
+                logger.debug('Would have warned about needing topup but no notification providers configured')
             return own_invoice, bb_invoice
         except Exception as e:
             logger.error(f"Error calculating topups: {e} {store} {traceback.format_exc()}")
@@ -9148,8 +9151,9 @@ async def main():
         logger.error(f'Error deleting expired cache entries {e} {traceback.format_exc()}')
     # init notifications
     try:
-        if len(NOTIFICATION_PROVIDERS)==0:
-            NOTIFICATION_PROVIDERS=await run_every_x_hours(my_func=setup_notifiers,hours=6)
+        if isinstance(NOTIFICATION_PROVIDERS,list):
+            if len(NOTIFICATION_PROVIDERS)==0:
+                NOTIFICATION_PROVIDERS=await run_every_x_hours(my_func=setup_notifiers,hours=6)
     except Exception as e:
         logger.error(f'Not able to setup notifications, please see logs! {e} {traceback.format_exc()}')
     # init Bitcart API.
@@ -9235,10 +9239,6 @@ async def main():
             breakpoint()
         topup_answer = await calculate_topups(api)
     except Exception:
-        # Previously this captured `e` but never wrote it — fully silent
-        # failure. Topup is the user-notification path for low liquidity;
-        # operators were blind to regressions here. `exception` includes
-        # the traceback automatically.
         logger.exception("Error calculating top-ups")
     # check available inbound liquidity
     liquidity_check_response = None
@@ -9454,7 +9454,7 @@ async def main():
     except Exception as e:
         logger.error(f"Error in cleanup_old_lsp_quotes scheduling: {e} {traceback.format_exc()}")
 
-    # Calculate and send cashouts, should basically be the same code as calculating fees
+    # Calculate and send cashouts
     cashout_response = None
     try:
         if DEBUG_STEPS:
