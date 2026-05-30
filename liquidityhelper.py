@@ -413,17 +413,25 @@ def maybe_attach_pycharm_debugger() -> None:
         )
         return
     try:
-        # JetBrains dropped stdoutToServer/stderrToServer from
-        # pydevd_pycharm.settrace in the 2024.2-era (252.x+) builds —
-        # console redirection is negotiated post-attach now. Pass them
-        # only if the installed signature still accepts them so we work
-        # against both old and new debugger packages without TypeError.
+        # JetBrains has shipped THREE kwarg conventions across pydevd-
+        # pycharm versions:
+        #   - pre-2024.2:  stdoutToServer / stderrToServer (camelCase)
+        #   - 2024.2..262: kwargs removed entirely
+        #   - 262.x+:      stdout_to_server / stderr_to_server (snake_case)
+        # Probe both forms and pass whichever the installed package
+        # accepts. Neither matching is fine — both default to False
+        # and the engine's logs will still flow normally; only the
+        # PyCharm console-redirect surface is affected.
         settrace_kwargs = {"port": port, "suspend": False}
         sig_params = inspect.signature(pydevd_pycharm.settrace).parameters
         if "stdoutToServer" in sig_params:
             settrace_kwargs["stdoutToServer"] = True
+        elif "stdout_to_server" in sig_params:
+            settrace_kwargs["stdout_to_server"] = True
         if "stderrToServer" in sig_params:
             settrace_kwargs["stderrToServer"] = True
+        elif "stderr_to_server" in sig_params:
+            settrace_kwargs["stderr_to_server"] = True
         pydevd_pycharm.settrace(host, **settrace_kwargs)
         logger.info(
             f"Attached to PyCharm debugger at {host}:{port} "
