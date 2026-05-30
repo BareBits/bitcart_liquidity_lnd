@@ -3024,30 +3024,30 @@ async def pick_best_channel_partners(ln_cashout_address: Optional[str] = None) -
 
 async def move_onchain_to_ln(
     wallet_id: str, amount_sats: int, api: BitcartAPI,
-    force_manual: bool = False,
+    force_automatic: bool = False,
 ) -> bool:
     """
     Open channels.
     pubkey: open channel to specified node
     Returns True if successful, false otherwise
 
-    `force_manual=True` bypasses the MANUAL_CHANNEL_CREATION_ENABLED
+    `force_automatic=True` bypasses the AUTOMATIC_CHANNEL_CREATION_ENABLED
     gate. Used by the PREFER_LN_CASHOUT path, which always picks the
-    peer manually regardless of LSP mode — its whole purpose is to
+    peer directly regardless of LSP mode — its whole purpose is to
     provision channels to a diverse set of operator-chosen nodes,
     which doesn't work if we hand peer selection off to an LSP.
     """
-    if not MANUAL_CHANNEL_CREATION_ENABLED and not force_manual:
+    if not AUTOMATIC_CHANNEL_CREATION_ENABLED and not force_automatic:
         # Defensive guard. The callers (decide_onchain_to_ln,
         # attempt_create_channels from liquidity_check) already gate on
         # this flag, but this catches any future call site that forgets.
         # Returning False signals "no channel opened" to the caller.
         logger.debug(
-            "move_onchain_to_ln called with MANUAL_CHANNEL_CREATION_ENABLED=False; "
+            "move_onchain_to_ln called with AUTOMATIC_CHANNEL_CREATION_ENABLED=False; "
             "skipping channel open for wallet %s", wallet_id,
         )
         return False
-    # Electrum guard. Manual channel creation depends on the
+    # Electrum guard. Automatic channel creation depends on the
     # LightningNode candidate DB which is populated from LND gossip
     # (effective_degree, two_hop_reach, median outbound fee rate —
     # none of which Electrum can supply or audit). Electrum's own
@@ -3059,9 +3059,9 @@ async def move_onchain_to_ln(
     full_wallet = await api.get_wallet(wallet_id)
     if not full_wallet or full_wallet.get("currency") != "btclnd":
         log_decision(
-            ("manual_channel_create_skipped_non_lnd", wallet_id), True,
+            ("automatic_channel_create_skipped_non_lnd", wallet_id), True,
             "move_onchain_to_ln: wallet %s is currency=%s, not btclnd; "
-            "manual channel creation is LND-only (depends on gossip-"
+            "automatic channel creation is LND-only (depends on gossip-"
             "derived candidate metrics). Operator must open channels "
             "directly via Electrum if needed.",
             wallet_id,
@@ -3150,11 +3150,11 @@ async def move_onchain_to_ln(
             open_kwargs: Dict[str, Any] = {
                 "node_pubkey_string": partner_pubkey,
                 "local_funding_amount": int(amount_sats),
-                # Public channel by default — these are operator-
-                # picked routing partners, not OWN_LIGHTNING_NODES
+                # Public channel by default — these are script-picked
+                # routing partners, not OWN_LIGHTNING_NODES
                 # entries. Operators wanting private channels here
                 # would need a separate knob (not currently exposed
-                # because the manual-channel-creation path is
+                # because the automatic-channel-creation path is
                 # specifically for building routing capacity).
                 "private": False,
                 "target_conf": int(LND_CHANNEL_OPEN_TARGET_CONF),
@@ -3952,7 +3952,7 @@ async def liquidity_check(
             logger.error(
                 f'in liquidity_check this shouldnt happen sum(needed_channel_liquidity_sizes)+store_total_liquidity<MIN_INBOUND_LIQUIDITY')
             continue
-        if not MANUAL_CHANNEL_CREATION_ENABLED:
+        if not AUTOMATIC_CHANNEL_CREATION_ENABLED:
             # Channel creation has been delegated to an LSP. For LND
             # wallets we fire the LSPS1 request flow (quote both providers,
             # pick via Zeus-preference, pay on-chain). Electrum wallets
@@ -3960,10 +3960,10 @@ async def liquidity_check(
             # left to the operator. `calculate_topups` already sent the
             # low-inbound notification.
             log_decision(
-                ("liquidity_check_manual_create_disabled", best_wallet["id"]),
+                ("liquidity_check_automatic_create_disabled", best_wallet["id"]),
                 True,
                 "liquidity_check: wallet %s needs more inbound liquidity; "
-                "MANUAL_CHANNEL_CREATION_ENABLED=False -> delegating to LSP",
+                "AUTOMATIC_CHANNEL_CREATION_ENABLED=False -> delegating to LSP",
                 best_wallet["id"],
             )
             if best_wallet.get("currency") == "btclnd":
@@ -3987,18 +3987,18 @@ async def liquidity_check(
                     best_wallet["id"], best_wallet.get("currency"),
                 )
             continue
-        # We're now in the MANUAL_CHANNEL_CREATION_ENABLED=True branch.
+        # We're now in the AUTOMATIC_CHANNEL_CREATION_ENABLED=True branch.
         # Same constraint as decide_onchain_to_ln and move_onchain_to_ln:
         # peer selection runs against the LND-gossip-derived candidate
         # DB, so Electrum wallets are skipped. The operator opens
         # channels manually via Electrum if they want inbound there.
         if best_wallet.get("currency") != "btclnd":
             log_decision(
-                ("liquidity_check_manual_skipped_non_lnd", best_wallet["id"]),
+                ("liquidity_check_automatic_skipped_non_lnd", best_wallet["id"]),
                 True,
                 "liquidity_check: wallet %s needs inbound liquidity and "
-                "MANUAL_CHANNEL_CREATION_ENABLED=True, but wallet is "
-                "currency=%s; manual creation is LND-only. Operator "
+                "AUTOMATIC_CHANNEL_CREATION_ENABLED=True, but wallet is "
+                "currency=%s; automatic creation is LND-only. Operator "
                 "must open channels manually for this wallet.",
                 best_wallet["id"], best_wallet.get("currency"),
             )
@@ -5235,7 +5235,7 @@ async def do_cashouts(api: BitcartAPI) -> Optional[bool]:
     On-chain leg (per PREFER_LN_CASHOUT):
       - PREFER_LN_CASHOUT=True: _attempt_ln_channel_open_for_cashout —
         first tries OWN_LIGHTNING_NODES direct-channel push_sat, then
-        falls back to a random-peer manual-mode channel-open.
+        falls back to a random-peer automatic-mode channel-open.
       - default: _attempt_onchain_cashout sweeps on-chain excess to
         CASHOUT_ONCHAIN.
 
@@ -5552,7 +5552,7 @@ async def _attempt_onchain_cashout(
     Reserve math: safe_to_spend() subtracts the floor from
     effective_min_reserve_onchain() — the LSP-mode formula
     (max(MIN_RESERVE_ONCHAIN, 6-month LSP peak), capped at
-    LSP_RESERVE_CAP_SAT) OR the manual-mode formula (target_liquidity +
+    LSP_RESERVE_CAP_SAT) OR the automatic-mode formula (target_liquidity +
     open/close fees + loop-out budget + safety) — so the wallet
     always has enough headroom for the next channel-acquisition step
     appropriate to its mode."""
@@ -5616,7 +5616,7 @@ async def _attempt_ln_channel_open_for_cashout(
          independently:
            a. `< effective_min_reserve_onchain()` — opening would dip
               below the reserve floor (LSP-replenish cost in LSP mode,
-              full target-liquidity budget in manual mode). Delay.
+              full target-liquidity budget in automatic mode). Delay.
            b. `< MIN_CHANNEL_SIZE_IN_SATS` — not enough on hand to open
               even a minimum-sized channel. Delay.
          The wallet must clear BOTH gates — effectively
@@ -5630,7 +5630,7 @@ async def _attempt_ln_channel_open_for_cashout(
         routing fees, gives you inbound liquidity for free). Always
         tried, with no existing-channel filter.
       - FALLBACK (only if the direct-channel attempt returns False):
-        `move_onchain_to_ln(force_manual=True)` opens a channel to a
+        `move_onchain_to_ln(force_automatic=True)` opens a channel to a
         new randomly-picked peer (`pick_best_channel_partners` filtered
         by `remove_existing_channel_partners`). LN balance from this
         channel will be cashed out to CASHOUT_LIGHTNING_ADDRESS by a
@@ -5730,7 +5730,7 @@ async def _attempt_ln_channel_open_for_cashout(
             wallet_id=wallet_id,
             amount_sats=max_channel_size,
             api=api,
-            force_manual=True,
+            force_automatic=True,
         )
     except Exception as e:
         logger.error(
@@ -5949,9 +5949,9 @@ async def topup_goal_amount(api:BitcartAPI,store_id:str)->Optional[int]:
         sat with defaults (MIN_RESERVE_ONCHAIN=10_000,
         LSP_RESERVE_CAP_SAT=50_000).
 
-      Manual mode: target_liquidity + per-channel open/close fees +
+      Automatic mode: target_liquidity + per-channel open/close fees +
         loop-out fee budget + safety. Encodes the assumption that
-        the operator funds inbound by opening channels and looping
+        the script funds inbound by opening channels and looping
         the local side back out. Typical: ~106k sat with defaults.
 
     The store_id parameter is kept for API compatibility (some
@@ -5964,7 +5964,7 @@ async def topup_goal_amount(api:BitcartAPI,store_id:str)->Optional[int]:
             f"topup_goal_amount: effective_min_reserve_onchain() "
             f"returned non-positive ({goal} sat) for store {store_id}. "
             f"Check MIN_RESERVE_ONCHAIN / LSP_RESERVE_CAP_SAT (LSP mode) "
-            f"or MIN_INBOUND_LIQUIDITY / MANUAL_* (manual mode) config."
+            f"or MIN_INBOUND_LIQUIDITY / AUTOMATIC_* (automatic mode) config."
         )
         return None
     return goal
@@ -5996,7 +5996,7 @@ async def calculate_topups(
     Create topup invoices for stores that need it. Returns URLs for own,bb topups.
 
     Suppresses the warning (log + SMTP + invoice creation) when the
-    deficit is within MANUAL_RESERVE_SAFETY_SAT of the reserve floor.
+    deficit is within AUTOMATIC_RESERVE_SAFETY_SAT of the reserve floor.
     This is a hysteresis zone so small fluctuations around the floor
     don't generate notifications. Action gates elsewhere
     (liquidity_check, decide_onchain_to_ln) still treat any positive
@@ -6014,16 +6014,16 @@ async def calculate_topups(
             # every time the wallet drifted a few hundred sats below
             # the floor — e.g. from an on-chain fee on the last cashout
             # cycle.
-            if store_needs_topup_result <= MANUAL_RESERVE_SAFETY_SAT:
+            if store_needs_topup_result <= AUTOMATIC_RESERVE_SAFETY_SAT:
                 log_decision(
                     ("topup_warning_in_safety_zone", store["id"]),
                     True,
                     "calculate_topups: store %s wallet is below reserve "
-                    "floor by %s — within MANUAL_RESERVE_SAFETY_SAT=%d "
+                    "floor by %s — within AUTOMATIC_RESERVE_SAFETY_SAT=%d "
                     "hysteresis zone, suppressing top-up warning.",
                     store["id"],
                     fmt_btc_sats(store_needs_topup_result),
-                    int(MANUAL_RESERVE_SAFETY_SAT),
+                    int(AUTOMATIC_RESERVE_SAFETY_SAT),
                 )
                 continue
             log_decision(
@@ -6127,8 +6127,8 @@ async def safe_to_spend(api:BitcartAPI,store_id:str)->int:
     #   LSP mode (default): max(MIN_RESERVE_ONCHAIN, 6-month LSP price
     #     peak), capped at LSP_RESERVE_CAP_SAT — headroom to pay for a
     #     new LSP-funded channel.
-    #   Manual mode: target_liquidity + per-channel open/close fees +
-    #     loop-out fee budget + MANUAL_RESERVE_SAFETY_SAT — headroom
+    #   Automatic mode: target_liquidity + per-channel open/close fees +
+    #     loop-out fee budget + AUTOMATIC_RESERVE_SAFETY_SAT — headroom
     #     to provision MIN_INBOUND_LIQUIDITY from scratch via
     #     channel-open + loop-out.
     floor = effective_min_reserve_onchain()
@@ -6217,15 +6217,15 @@ async def decide_onchain_to_ln(api:BitcartAPI):
     '''
     Figure out what on-chain funds are safe to spend making channels, make new channels if appropriate
     '''
-    # In LSP mode (MANUAL_CHANNEL_CREATION_ENABLED=False, the default),
+    # In LSP mode (AUTOMATIC_CHANNEL_CREATION_ENABLED=False, the default),
     # channel creation is delegated to an LSP and this function early-
-    # returns. In manual mode the rest of the function runs and opens
+    # returns. In automatic mode the rest of the function runs and opens
     # channels itself via move_onchain_to_ln.
-    if not MANUAL_CHANNEL_CREATION_ENABLED:
+    if not AUTOMATIC_CHANNEL_CREATION_ENABLED:
         log_decision(
-            "manual_channel_creation_gate",
+            "automatic_channel_creation_gate",
             False,
-            "decide_onchain_to_ln: skipped (MANUAL_CHANNEL_CREATION_ENABLED=False; "
+            "decide_onchain_to_ln: skipped (AUTOMATIC_CHANNEL_CREATION_ENABLED=False; "
             "channel creation is delegated to an external LSP)",
         )
         return
@@ -6241,7 +6241,7 @@ async def decide_onchain_to_ln(api:BitcartAPI):
         store_id=store['id']
         best_wallet=await api.get_best_ln_wallet_for_store(store)
         # Electrum guard, same rationale as the one in
-        # move_onchain_to_ln: the manual rebalancing path expects to
+        # move_onchain_to_ln: the automatic rebalancing path expects to
         # pick channel partners from the LND-gossip-derived candidate
         # DB. Skip on Electrum wallets and let the operator manage
         # rebalancing manually.
@@ -6250,7 +6250,7 @@ async def decide_onchain_to_ln(api:BitcartAPI):
                 ("decide_onchain_to_ln_skipped_non_lnd", best_wallet["id"]),
                 True,
                 "decide_onchain_to_ln: store %s best wallet %s is "
-                "currency=%s, not btclnd; manual rebalancing is LND-only",
+                "currency=%s, not btclnd; automatic rebalancing is LND-only",
                 store_id, best_wallet["id"], best_wallet.get("currency"),
             )
             continue
@@ -6711,7 +6711,7 @@ def effective_min_reserve_onchain() -> int:
     cashout LSP-shortfall holdback, the PREFER_LN_CASHOUT reserve
     gate, and topup_goal_amount.
 
-    The formula branches on MANUAL_CHANNEL_CREATION_ENABLED because
+    The formula branches on AUTOMATIC_CHANNEL_CREATION_ENABLED because
     the two modes have entirely different cost structures:
 
     LSP mode (default): we pay an LSP a small fee to obtain inbound
@@ -6720,14 +6720,14 @@ def effective_min_reserve_onchain() -> int:
             min(LSP_RESERVE_CAP_SAT,
                 max(MIN_RESERVE_ONCHAIN, recent_lsp_peak))
 
-    Manual mode: we open channels ourselves, then loop-out the local
-        side back to on-chain to convert outbound capacity into
+    Automatic mode: the script opens channels directly, then loop-outs the
+        local side back to on-chain to convert outbound capacity into
         inbound. The reserve has to fund that entire workflow up to
         the configured liquidity target:
             target_liquidity
-              + MIN_CHANNEL_COUNT * MANUAL_CHANNEL_OPEN_FEE_ESTIMATE_SAT * 2
-              + target_liquidity * MANUAL_LIQUIDITY_LOOPOUT_FEE_PERCENT
-              + MANUAL_RESERVE_SAFETY_SAT
+              + MIN_CHANNEL_COUNT * AUTOMATIC_CHANNEL_OPEN_FEE_ESTIMATE_SAT * 2
+              + target_liquidity * AUTOMATIC_LIQUIDITY_LOOPOUT_FEE_PERCENT
+              + AUTOMATIC_RESERVE_SAFETY_SAT
         where target_liquidity = max(MIN_INBOUND_LIQUIDITY,
                                     MIN_INBOUND_LIQUIDITY_PER_CHANNEL
                                     * MIN_CHANNEL_COUNT).
@@ -6735,24 +6735,24 @@ def effective_min_reserve_onchain() -> int:
         as well. The 1% loop-out fee is applied to the full target
         (not per-channel-and-multiplied-again).
     """
-    if MANUAL_CHANNEL_CREATION_ENABLED:
+    if AUTOMATIC_CHANNEL_CREATION_ENABLED:
         target_liquidity = max(
             int(MIN_INBOUND_LIQUIDITY),
             int(MIN_INBOUND_LIQUIDITY_PER_CHANNEL) * int(MIN_CHANNEL_COUNT),
         )
         open_close_total = (
             int(MIN_CHANNEL_COUNT)
-            * int(MANUAL_CHANNEL_OPEN_FEE_ESTIMATE_SAT)
+            * int(AUTOMATIC_CHANNEL_OPEN_FEE_ESTIMATE_SAT)
             * 2
         )
         loop_out_total = int(
-            target_liquidity * float(MANUAL_LIQUIDITY_LOOPOUT_FEE_PERCENT)
+            target_liquidity * float(AUTOMATIC_LIQUIDITY_LOOPOUT_FEE_PERCENT)
         )
         return (
             target_liquidity
             + open_close_total
             + loop_out_total
-            + int(MANUAL_RESERVE_SAFETY_SAT)
+            + int(AUTOMATIC_RESERVE_SAFETY_SAT)
         )
     return min(LSP_RESERVE_CAP_SAT, max(
         int(MIN_RESERVE_ONCHAIN),
@@ -6843,16 +6843,16 @@ async def pick_best_lsp_for_inbound(
     Returns (provider, LspQuote) or None if no provider returned a quote
     we'd consider taking, or the wallet isn't LND-backed.
     """
-    if MANUAL_CHANNEL_CREATION_ENABLED:
+    if AUTOMATIC_CHANNEL_CREATION_ENABLED:
         # Defensive: callers (request_inbound_liquidity_from_lsp via
         # liquidity_check) are already mode-gated, but guard here too
         # so any future caller can't accidentally pull LSP quotes when
-        # the operator has chosen manual channel creation.
+        # the operator has chosen automatic channel creation.
         log_decision(
-            ("pick_lsp_skip_manual_mode", wallet.get("id")), True,
+            ("pick_lsp_skip_automatic_mode", wallet.get("id")), True,
             "pick_best_lsp_for_inbound: wallet %s — "
-            "MANUAL_CHANNEL_CREATION_ENABLED=True, not fetching LSP "
-            "quotes (manual mode owns channel creation).",
+            "AUTOMATIC_CHANNEL_CREATION_ENABLED=True, not fetching LSP "
+            "quotes (automatic mode owns channel creation).",
             wallet.get("id"),
         )
         return None
@@ -7026,7 +7026,7 @@ async def request_inbound_liquidity_from_lsp(
     api: "BitcartAPI",
 ) -> Optional[LspChannelOrder]:
     """Top-level entry. Called from liquidity_check when the per-wallet
-    inbound-need check fires AND MANUAL_CHANNEL_CREATION_ENABLED=False.
+    inbound-need check fires AND AUTOMATIC_CHANNEL_CREATION_ENABLED=False.
 
     Pipeline:
       1. LND-only short-circuit.
@@ -7484,7 +7484,7 @@ async def refresh_lnd_node_database(api: "BitcartAPI") -> None:
     wallets across many stores, none of them gets a meaningfully
     "better" graph from being asked.
 
-    Gated on MANUAL_CHANNEL_CREATION_ENABLED. When False (the default
+    Gated on AUTOMATIC_CHANNEL_CREATION_ENABLED. When False (the default
     LSP mode), channel creation is delegated entirely to LSPs and we
     never read from the candidate DB; pulling and persisting tens of
     MB of gossip we won't use is pure waste. Early-return with a
@@ -7495,20 +7495,20 @@ async def refresh_lnd_node_database(api: "BitcartAPI") -> None:
     — graph refresh is best-effort; the script keeps using the
     most-recently-known LightningNode rows if a refresh fails.
     """
-    if not MANUAL_CHANNEL_CREATION_ENABLED:
+    if not AUTOMATIC_CHANNEL_CREATION_ENABLED:
         log_decision(
             ("lnd_graph_pull_gated", "global"), "skipped_lsp_mode",
             "refresh_lnd_node_database: skipped — "
-            "MANUAL_CHANNEL_CREATION_ENABLED=False, channel creation "
+            "AUTOMATIC_CHANNEL_CREATION_ENABLED=False, channel creation "
             "is delegated to LSPs; no need to maintain a candidate "
-            "node list. Flip to True if you want to open channels "
-            "yourself and re-enable the daily gossip pull.",
+            "node list. Flip to True to let the script open channels "
+            "directly and re-enable the daily gossip pull.",
         )
         return
     log_decision(
-        ("lnd_graph_pull_gated", "global"), "running_manual_mode",
+        ("lnd_graph_pull_gated", "global"), "running_automatic_mode",
         "refresh_lnd_node_database: enabled — "
-        "MANUAL_CHANNEL_CREATION_ENABLED=True; pulling LND gossip "
+        "AUTOMATIC_CHANNEL_CREATION_ENABLED=True; pulling LND gossip "
         "to refresh candidate node list.",
     )
     try:
@@ -8223,7 +8223,7 @@ _HEALTH_WARNING_IDS = (
     "loopd-regtest-no-host",                  # H19
     "autoloop-without-loopout",               # H20
     "loopout-without-onchain-dest",           # H21
-    "manual-loopout-fee-implausible",         # M18
+    "automatic-loopout-fee-implausible",      # M18
     "autoloop-dual-destination",              # M22
     "autoloop-min-above-max",                 # M23
     "smtp-tls-and-ssl",                       # M24
@@ -8420,15 +8420,15 @@ def _check_loop_smtp_config() -> List[Dict[str, str]]:
             "otherwise fire it.",
             settings=["LOOP_OUT_ENABLED", "CASHOUT_ONCHAIN"],
         ))
-    if MANUAL_LIQUIDITY_LOOPOUT_FEE_PERCENT > 0.10:
+    if AUTOMATIC_LIQUIDITY_LOOPOUT_FEE_PERCENT > 0.10:
         out.append(_warn(
-            "manual-loopout-fee-implausible", "MEDIUM", "loop",
-            "MANUAL_LIQUIDITY_LOOPOUT_FEE_PERCENT > 10%",
-            f"MANUAL_LIQUIDITY_LOOPOUT_FEE_PERCENT="
-            f"{MANUAL_LIQUIDITY_LOOPOUT_FEE_PERCENT:.4f}. Loop-out "
+            "automatic-loopout-fee-implausible", "MEDIUM", "loop",
+            "AUTOMATIC_LIQUIDITY_LOOPOUT_FEE_PERCENT > 10%",
+            f"AUTOMATIC_LIQUIDITY_LOOPOUT_FEE_PERCENT="
+            f"{AUTOMATIC_LIQUIDITY_LOOPOUT_FEE_PERCENT:.4f}. Loop-out "
             f"fees in practice are well under 1% — values above 10% "
             f"are almost certainly a typo (e.g. 10 instead of 0.10).",
-            settings=["MANUAL_LIQUIDITY_LOOPOUT_FEE_PERCENT"],
+            settings=["AUTOMATIC_LIQUIDITY_LOOPOUT_FEE_PERCENT"],
         ))
     if AUTOLOOP_DEST_ADDRESS and AUTOLOOP_ACCOUNT:
         out.append(_warn(
@@ -8689,19 +8689,19 @@ async def audit_lsp_network_compatibility(api: "BitcartAPI") -> None:
     run_every_x_days) so operators can confirm before relying on it.
 
     LSPs aren't required infrastructure (the script falls back to
-    manual channel management) so we never RAISE — only emit
+    automatic channel management) so we never RAISE — only emit
     decisions. The dashboard reads from the same decision stream so
     operators can also see this in the log viewer.
 
-    Skipped entirely when MANUAL_CHANNEL_CREATION_ENABLED=True —
-    LSPs aren't used in manual mode, so audit data would just be
+    Skipped entirely when AUTOMATIC_CHANNEL_CREATION_ENABLED=True —
+    LSPs aren't used in automatic mode, so audit data would just be
     noise.
     """
-    if MANUAL_CHANNEL_CREATION_ENABLED:
+    if AUTOMATIC_CHANNEL_CREATION_ENABLED:
         log_decision(
-            ("lsp_compat_audit_gated", "global"), "manual_mode",
+            ("lsp_compat_audit_gated", "global"), "automatic_mode",
             "audit_lsp_network_compatibility: skipped — "
-            "MANUAL_CHANNEL_CREATION_ENABLED=True (LSPs unused).",
+            "AUTOMATIC_CHANNEL_CREATION_ENABLED=True (LSPs unused).",
         )
         return
     try:
@@ -8767,15 +8767,15 @@ async def ensure_lnd_wallets_peered_with_lsps(api: "BitcartAPI") -> None:
     Gated by LSP_AUTO_PEER (default True). No-op when False — operators
     who manage peering out of band can disable.
 
-    Also skipped when MANUAL_CHANNEL_CREATION_ENABLED=True: no LSP
-    request will ever fire in manual mode, so the peering would
+    Also skipped when AUTOMATIC_CHANNEL_CREATION_ENABLED=True: no LSP
+    request will ever fire in automatic mode, so the peering would
     just be wasted ConnectPeer calls.
     """
-    if MANUAL_CHANNEL_CREATION_ENABLED:
+    if AUTOMATIC_CHANNEL_CREATION_ENABLED:
         log_decision(
-            ("lsp_peering_gated", "global"), "manual_mode",
+            ("lsp_peering_gated", "global"), "automatic_mode",
             "ensure_lnd_wallets_peered_with_lsps: skipped — "
-            "MANUAL_CHANNEL_CREATION_ENABLED=True (LSPs unused).",
+            "AUTOMATIC_CHANNEL_CREATION_ENABLED=True (LSPs unused).",
         )
         return
     if not LSP_AUTO_PEER:
@@ -9602,7 +9602,7 @@ async def run_tick_loop(stop_event: Optional[asyncio.Event] = None) -> None:
             log_decision(
                 ("liquidity_disabled_waiting",), True,
                 "LIQUIDITY_DISABLED=True; tick loop is paused. "
-                "Set mode to LSP or Manual on the dashboard Settings "
+                "Set mode to LSP or Automatic on the dashboard Settings "
                 "tab to resume.",
             )
             if stop_event is not None:

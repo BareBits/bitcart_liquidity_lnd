@@ -76,14 +76,14 @@ Which Bitcoin networks each component will function on. ✅ = works against a pu
 
 | Component                              | mainnet | testnet3 | testnet4 | signet (official) | Mutinynet (signet variant) | regtest |
 |----------------------------------------|:-------:|:--------:|:--------:|:-----------------:|:--------------------------:|:-------:|
-| Manual channel management (LND-only)¹  |   ✅    |    ✅    |    ✅    |        ✅         |             ✅             |   ✅²   |
+| Automatic channel management (LND-only)¹|   ✅    |    ✅    |    ✅    |        ✅         |             ✅             |   ✅²   |
 | Loop (Lightning Labs `loopd` LoopOut)  |   ✅    |    ✅    |    ❌    |        ✅         |             ❌             |   ⚠️³   |
 | LSP mode — Zeus (`lnolymp.us`)         |   ✅    |    ✅    |    ❌⁴   |        ❌⁵        |             ✅             |   ❌    |
 | LSP mode — Megalithic (`megalithic.me`)|   ✅    |    ❌    |    ❌    |        ❌⁵        |             ✅             |   ❌    |
 
 Notes:
 
-¹ Manual channel management uses an LND-gossip-derived candidate DB to pick peers; Electrum wallets are not supported on this path. Whatever network your LND node speaks, this component speaks. (Electrum wallets can use LSP mode where available, but cannot purchase from LSPs today due to an Electrum bug paying LSP invoices.)
+¹ Automatic channel management uses an LND-gossip-derived candidate DB to pick peers; Electrum wallets are not supported on this path. Whatever network your LND node speaks, this component speaks. (Electrum wallets can use LSP mode where available, but cannot purchase from LSPs today due to an Electrum bug paying LSP invoices.)
 
 ² On regtest you supply the peer set yourself — there is no public gossip to enumerate.
 

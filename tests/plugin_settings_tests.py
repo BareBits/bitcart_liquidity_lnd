@@ -310,7 +310,7 @@ def test_run_tick_loop_skips_main_when_liquidity_disabled(monkeypatch, event_loo
 def test_run_tick_loop_resumes_when_liquidity_re_enabled(monkeypatch, event_loop):
     """Flipping LIQUIDITY_DISABLED False mid-loop must let main() fire
     on the next iteration. Mirrors what the bridge does when the
-    operator changes the dropdown back to LSP/Manual."""
+    operator changes the dropdown back to LSP/Automatic."""
     import liquidityhelper
 
     stop = asyncio.Event()

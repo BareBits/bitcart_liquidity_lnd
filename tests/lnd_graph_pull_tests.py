@@ -555,10 +555,10 @@ def test_merge_lightning_node_chooses_max_for_counters():
 
 
 # ---------------------------------------------------------------------------
-# refresh_lnd_node_database — gated on MANUAL_CHANNEL_CREATION_ENABLED
+# refresh_lnd_node_database — gated on AUTOMATIC_CHANNEL_CREATION_ENABLED
 # ---------------------------------------------------------------------------
 #
-# When MANUAL_CHANNEL_CREATION_ENABLED is False (the default LSP mode),
+# When AUTOMATIC_CHANNEL_CREATION_ENABLED is False (the default LSP mode),
 # the LightningNode candidate DB is never consulted — channel creation
 # is delegated to LSPs. Pulling and persisting tens of MB of gossip we
 # won't use is pure waste, so refresh_lnd_node_database must early-
@@ -571,11 +571,11 @@ import liquidityhelper
 from tests._fakes import FakeBitcartAPI
 
 
-def test_refresh_skipped_when_manual_disabled(monkeypatch, event_loop):
+def test_refresh_skipped_when_automatic_disabled(monkeypatch, event_loop):
     """Default LSP mode: refresh must not even call get_wallets, let
     alone do a graph pull. Pin against future refactors that drop the
     gate."""
-    monkeypatch.setattr(liquidityhelper, "MANUAL_CHANNEL_CREATION_ENABLED", False)
+    monkeypatch.setattr(liquidityhelper, "AUTOMATIC_CHANNEL_CREATION_ENABLED", False)
     liquidityhelper._last_decision_state.clear()
     api = FakeBitcartAPI()
     called = {"get_wallets": 0}
@@ -589,15 +589,15 @@ def test_refresh_skipped_when_manual_disabled(monkeypatch, event_loop):
     )
     assert called["get_wallets"] == 0, (
         "refresh_lnd_node_database must not query wallets when "
-        "MANUAL_CHANNEL_CREATION_ENABLED=False"
+        "AUTOMATIC_CHANNEL_CREATION_ENABLED=False"
     )
 
 
-def test_refresh_runs_when_manual_enabled(monkeypatch, event_loop):
-    """When the operator flips to manual mode, the gate opens and the
+def test_refresh_runs_when_automatic_enabled(monkeypatch, event_loop):
+    """When the operator flips to automatic mode, the gate opens and the
     refresh actually attempts to fetch wallets. We stub out the graph
     pull itself so we don't need a real LND."""
-    monkeypatch.setattr(liquidityhelper, "MANUAL_CHANNEL_CREATION_ENABLED", True)
+    monkeypatch.setattr(liquidityhelper, "AUTOMATIC_CHANNEL_CREATION_ENABLED", True)
     liquidityhelper._last_decision_state.clear()
     api = FakeBitcartAPI()
     called = {"get_wallets": 0, "pull": 0}
@@ -635,7 +635,7 @@ def test_refresh_gate_logs_transition_on_mode_flip(monkeypatch, event_loop, capl
     liquidityhelper._last_decision_state.clear()
 
     # Tick 1: LSP mode. Should log "skipped — LSP mode".
-    monkeypatch.setattr(liquidityhelper, "MANUAL_CHANNEL_CREATION_ENABLED", False)
+    monkeypatch.setattr(liquidityhelper, "AUTOMATIC_CHANNEL_CREATION_ENABLED", False)
     with caplog.at_level(logging.INFO, logger="liquidityhelper.decisions"):
         event_loop.run_until_complete(
             liquidityhelper.refresh_lnd_node_database(api)
@@ -658,8 +658,8 @@ def test_refresh_gate_logs_transition_on_mode_flip(monkeypatch, event_loop, capl
         "second tick in LSP mode must not re-log the skip message"
     )
 
-    # Tick 3: operator flips to manual mode. Should log the transition.
-    monkeypatch.setattr(liquidityhelper, "MANUAL_CHANNEL_CREATION_ENABLED", True)
+    # Tick 3: operator flips to automatic mode. Should log the transition.
+    monkeypatch.setattr(liquidityhelper, "AUTOMATIC_CHANNEL_CREATION_ENABLED", True)
     event_loop.run_until_complete(
         liquidityhelper.refresh_lnd_node_database(api)
     )
@@ -2431,20 +2431,20 @@ def test_attempt_force_sets_force_close_initiated_at(monkeypatch, event_loop):
 
 
 # ---------------------------------------------------------------------------
-# Topup goal: LSP-aware single-channel cost vs manual full-size math
+# Topup goal: LSP-aware single-channel cost vs automatic full-size math
 # ---------------------------------------------------------------------------
 #
-# topup_goal_amount used to ALWAYS return the manual-channel-creation
+# topup_goal_amount used to ALWAYS return the automatic-channel-creation
 # amount (channel size + ~11k on-chain reserve per channel). In LSP
 # mode that over-asks by ~40× — the actual LSP fee is a few thousand
-# sats, not 100k+. Fix: branch on MANUAL_CHANNEL_CREATION_ENABLED.
+# sats, not 100k+. Fix: branch on AUTOMATIC_CHANNEL_CREATION_ENABLED.
 
 
 def test_topup_goal_lsp_mode_returns_single_channel_cost(monkeypatch, event_loop):
     """LSP mode: goal = effective_min_reserve_onchain() — single LSP
     channel cost. We open one LSP channel per wallet, never more
     simultaneously."""
-    monkeypatch.setattr(liquidityhelper, "MANUAL_CHANNEL_CREATION_ENABLED", False)
+    monkeypatch.setattr(liquidityhelper, "AUTOMATIC_CHANNEL_CREATION_ENABLED", False)
     monkeypatch.setattr(liquidityhelper, "MIN_RESERVE_ONCHAIN", 5_000)
     monkeypatch.setattr(liquidityhelper, "LSP_RESERVE_CAP_SAT", 50_000)
     # No prior LSP quotes — effective_min_reserve_onchain falls back
@@ -2462,7 +2462,7 @@ def test_topup_goal_lsp_mode_tracks_recent_lsp_quotes(monkeypatch, event_loop):
     """LSP mode: when 6-month LSP price high-water-mark exceeds
     MIN_RESERVE_ONCHAIN, the goal tracks the higher value (capped at
     LSP_RESERVE_CAP_SAT)."""
-    monkeypatch.setattr(liquidityhelper, "MANUAL_CHANNEL_CREATION_ENABLED", False)
+    monkeypatch.setattr(liquidityhelper, "AUTOMATIC_CHANNEL_CREATION_ENABLED", False)
     monkeypatch.setattr(liquidityhelper, "MIN_RESERVE_ONCHAIN", 5_000)
     monkeypatch.setattr(liquidityhelper, "LSP_RESERVE_CAP_SAT", 100_000)
     monkeypatch.setattr(liquidityhelper, "LSP_MAX_FEE_PERCENT", 1.0)  # no per-quote rejection
@@ -2490,7 +2490,7 @@ def test_topup_goal_lsp_mode_is_NOT_multiplied_by_channel_count(monkeypatch, eve
     """The key regression-pin: in LSP mode, the goal is single-
     channel-cost, NOT MIN_CHANNEL_COUNT × that. We only buy one LSP
     channel at a time (one-LSP-channel-per-wallet invariant)."""
-    monkeypatch.setattr(liquidityhelper, "MANUAL_CHANNEL_CREATION_ENABLED", False)
+    monkeypatch.setattr(liquidityhelper, "AUTOMATIC_CHANNEL_CREATION_ENABLED", False)
     monkeypatch.setattr(liquidityhelper, "MIN_RESERVE_ONCHAIN", 10_000)
     monkeypatch.setattr(liquidityhelper, "LSP_RESERVE_CAP_SAT", 50_000)
     monkeypatch.setattr(liquidityhelper, "MIN_CHANNEL_COUNT", 5)  # ignored in LSP mode
@@ -2507,12 +2507,12 @@ def test_topup_goal_lsp_mode_is_NOT_multiplied_by_channel_count(monkeypatch, eve
     )
 
 
-def test_topup_goal_manual_mode_uses_full_channel_creation_math(monkeypatch, event_loop):
-    """Manual mode: the legacy multi-channel math applies — the goal
+def test_topup_goal_automatic_mode_uses_full_channel_creation_math(monkeypatch, event_loop):
+    """Automatic mode: the legacy multi-channel math applies — the goal
     is sum of channel sizes + per-channel on-chain reserve. Verify
-    by toggling the manual flag and confirming the result is
+    by toggling the automatic flag and confirming the result is
     materially larger than the LSP-mode goal."""
-    monkeypatch.setattr(liquidityhelper, "MANUAL_CHANNEL_CREATION_ENABLED", True)
+    monkeypatch.setattr(liquidityhelper, "AUTOMATIC_CHANNEL_CREATION_ENABLED", True)
     monkeypatch.setattr(liquidityhelper, "MIN_INBOUND_LIQUIDITY", 100_000)
     monkeypatch.setattr(liquidityhelper, "MIN_CHANNEL_COUNT", 2)
     api = FakeBitcartAPI()
@@ -2531,7 +2531,7 @@ def test_topup_goal_manual_mode_uses_full_channel_creation_math(monkeypatch, eve
     # Two channels: 2 * 51k + 2 * 11k = ~124k. Much bigger than LSP.
     assert goal is not None
     assert 100_000 <= goal <= 150_000, (
-        f"manual-mode topup goal should be in the ~100-150k range "
+        f"automatic-mode topup goal should be in the ~100-150k range "
         f"(channel capital dominates); got {goal}"
     )
 
@@ -2989,20 +2989,20 @@ def test_pending_closes_no_blacklist_when_channel_lacks_pubkey(
 
 
 # ---------------------------------------------------------------------------
-# Electrum guards on manual channel management
+# Electrum guards on automatic channel management
 # ---------------------------------------------------------------------------
 #
-# Manual channel creation depends on peer-selection metrics derived from
+# Automatic channel creation depends on peer-selection metrics derived from
 # LND gossip (effective_degree, two_hop_reach, median outbound fee rate).
 # Electrum can't supply or audit these. The three relevant entry points
-# (move_onchain_to_ln, decide_onchain_to_ln, liquidity_check's MANUAL
+# (move_onchain_to_ln, decide_onchain_to_ln, liquidity_check's AUTOMATIC
 # branch) all short-circuit on non-btclnd wallets.
 
 def test_move_onchain_to_ln_skips_electrum_wallet(monkeypatch, event_loop):
     """Calling move_onchain_to_ln directly with an Electrum wallet
     short-circuits before reaching pick_best_channel_partners or the
     open-channel RPC."""
-    monkeypatch.setattr(liquidityhelper, "MANUAL_CHANNEL_CREATION_ENABLED", True)
+    monkeypatch.setattr(liquidityhelper, "AUTOMATIC_CHANNEL_CREATION_ENABLED", True)
     liquidityhelper._last_decision_state.clear()
 
     api = FakeBitcartAPI()
@@ -3029,12 +3029,12 @@ def test_move_onchain_to_ln_skips_electrum_wallet(monkeypatch, event_loop):
 
 
 def test_move_onchain_to_ln_runs_for_btclnd_wallet(monkeypatch, event_loop):
-    """Sanity: with MANUAL_CHANNEL_CREATION_ENABLED=True and an LND
+    """Sanity: with AUTOMATIC_CHANNEL_CREATION_ENABLED=True and an LND
     wallet, the function progresses past the Electrum guard. We stub
     out pick_best_channel_partners with an empty list so the function
     exits cleanly at the next gate — what matters is that it gets
     that far."""
-    monkeypatch.setattr(liquidityhelper, "MANUAL_CHANNEL_CREATION_ENABLED", True)
+    monkeypatch.setattr(liquidityhelper, "AUTOMATIC_CHANNEL_CREATION_ENABLED", True)
     liquidityhelper._last_decision_state.clear()
 
     api = FakeBitcartAPI()
@@ -3060,7 +3060,7 @@ def test_move_onchain_to_ln_runs_for_btclnd_wallet(monkeypatch, event_loop):
 def test_decide_onchain_to_ln_skips_electrum_wallet(monkeypatch, event_loop):
     """A store whose best wallet is Electrum is skipped in the loop —
     no topup/liquidity/channel-open work attempted for that store."""
-    monkeypatch.setattr(liquidityhelper, "MANUAL_CHANNEL_CREATION_ENABLED", True)
+    monkeypatch.setattr(liquidityhelper, "AUTOMATIC_CHANNEL_CREATION_ENABLED", True)
     # Avoid triggering should_prefer_onchain_cashout's short-circuit
     # via the cashout-staleness path.
     monkeypatch.setattr(liquidityhelper, "PREFER_CASHOUT_ONCHAIN", False)
@@ -3094,7 +3094,7 @@ def test_lsp_skip_on_electrum_already_handled():
     LSP is skipped for non-LND — exact key match."""
     # The actual gating path is reached via liquidity_check + full
     # store setup, which is heavy to drive in a unit test. We rely
-    # on the manual-create guard test below to demonstrate the
+    # on the automatic-create guard test below to demonstrate the
     # symmetric Electrum-skip log_decision pattern; this docstring
     # serves as the audit trail.
     assert True

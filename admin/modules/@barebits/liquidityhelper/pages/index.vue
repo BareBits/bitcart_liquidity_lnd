@@ -65,7 +65,7 @@
           <v-card-text>
             <!-- Mode + preferred-cashout header. Two-line summary
                  showing the operator at a glance what management mode
-                 the plugin is in (LSP vs manual channel mgmt) and
+                 the plugin is in (LSP vs automatic channel mgmt) and
                  which cashout rail the engine will try first (with
                  the other enabled rail as fallback in parens). The
                  on-chain destination address is shown truncated
@@ -345,7 +345,7 @@
                    inbound + outbound balance and active channel count,
                    plus a totals row at the bottom. Title shows which
                    liquidity-management mode is configured (LSP-managed
-                   vs Manual) so the operator instantly knows whether
+                   vs Automatic) so the operator instantly knows whether
                    new-channel acquisition is automatic or operator-
                    driven. Replaces the per-store inbound-liquidity row
                    that used to live on each StoreCard. -->
@@ -358,7 +358,7 @@
                   <v-chip
                     class="ml-3"
                     small
-                    :color="dashboard.liquidity_stats.mode === 'Manual channel management' ? 'warning' : 'info'"
+                    :color="dashboard.liquidity_stats.mode === 'Automatic channel management' ? 'warning' : 'info'"
                     outlined
                   >
                     {{ dashboard.liquidity_stats.mode }}
@@ -1070,7 +1070,7 @@
 
             <!-- ──────────── Liquidity management mode ────────────
                  Top-level dropdown that drives the underlying
-                 LIQUIDITY_DISABLED + MANUAL_CHANNEL_CREATION_ENABLED
+                 LIQUIDITY_DISABLED + AUTOMATIC_CHANNEL_CREATION_ENABLED
                  flags in one click. Those flags are excluded from the
                  expansion-panel list below so this dropdown is the
                  single authoritative entry point. -->
@@ -1104,8 +1104,9 @@
                       <strong>LSP</strong>: channel acquisition is delegated to
                       Zeus or Megalithic over LSPS1 (default).
                       <br>
-                      <strong>Manual</strong>: open channels yourself from a
-                      locally curated peer database.
+                      <strong>Automatic</strong>: the plugin opens channels
+                      directly to peers selected from a locally curated
+                      database (no LSP intermediary).
                       <br>
                       <strong>Disabled</strong>: pause the tick loop entirely.
                       Cashouts, fee payments, and channel creation all stop
@@ -1719,7 +1720,7 @@ export default {
       liquidityModeSaveError: "",
       liquidityModeOptions: [
         { text: "LSP", value: "lsp" },
-        { text: "Manual", value: "manual" },
+        { text: "Automatic", value: "automatic" },
         { text: "Disabled", value: "disabled" },
       ],
       // schemaGroups comes from /api/plugins/liquidityhelper/settings/schema
@@ -1753,7 +1754,7 @@ export default {
       // operators can add it back via the chip group.
       allLogLevels: ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
       enabledLogLevels: ["INFO", "WARNING", "ERROR", "CRITICAL"],
-      // Debug-mode (manual single-step) state.
+      // Debug-mode (operator single-step) state.
       loadingDebugTick: false,
       debugTickStatus: null,    // {triggered, message} from POST /debug/run_once
 
@@ -2217,37 +2218,37 @@ export default {
       return map[String(ch.peer_pubkey).toLowerCase()] || ""
     },
     // Project the two underlying flags (LIQUIDITY_DISABLED +
-    // MANUAL_CHANNEL_CREATION_ENABLED) onto the three dropdown values.
-    // Disabled wins regardless of the manual flag — when paused, the
+    // AUTOMATIC_CHANNEL_CREATION_ENABLED) onto the three dropdown values.
+    // Disabled wins regardless of the automatic flag — when paused, the
     // engine isn't running either path anyway. Called after settings
     // load + after each successful save.
     syncLiquidityModeUi() {
       const s = this.settings || {}
       if (s.LIQUIDITY_DISABLED) {
         this.liquidityModeUi = "disabled"
-      } else if (s.MANUAL_CHANNEL_CREATION_ENABLED) {
-        this.liquidityModeUi = "manual"
+      } else if (s.AUTOMATIC_CHANNEL_CREATION_ENABLED) {
+        this.liquidityModeUi = "automatic"
       } else {
         this.liquidityModeUi = "lsp"
       }
     },
     // Inverse projection. Returns the partial settings dict to POST
     // for a given dropdown value. Disabled preserves the operator's
-    // existing LSP/Manual choice on the other flag so flipping
-    // Disabled → LSP/Manual is a one-step revert.
+    // existing LSP/Automatic choice on the other flag so flipping
+    // Disabled → LSP/Automatic is a one-step revert.
     liquidityModePayload(mode) {
       if (mode === "disabled") {
         return { LIQUIDITY_DISABLED: true }
       }
-      if (mode === "manual") {
+      if (mode === "automatic") {
         return {
           LIQUIDITY_DISABLED: false,
-          MANUAL_CHANNEL_CREATION_ENABLED: true,
+          AUTOMATIC_CHANNEL_CREATION_ENABLED: true,
         }
       }
       return {
         LIQUIDITY_DISABLED: false,
-        MANUAL_CHANNEL_CREATION_ENABLED: false,
+        AUTOMATIC_CHANNEL_CREATION_ENABLED: false,
       }
     },
     async onLiquidityModeChange(mode) {

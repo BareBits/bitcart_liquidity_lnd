@@ -656,12 +656,12 @@ def test_liquidity_stats_totals_across_multiple_wallets(monkeypatch):
 
 
 def test_liquidity_stats_mode_label_lsp_default(monkeypatch):
-    """Default config (MANUAL_CHANNEL_CREATION_ENABLED=False) →
+    """Default config (AUTOMATIC_CHANNEL_CREATION_ENABLED=False) →
     'LSP-managed liquidity'. Operators delegate channel acquisition
     to an LSP via pick_best_lsp_for_inbound."""
     import importlib, config
     importlib.reload(config)
-    monkeypatch.setattr(config, "MANUAL_CHANNEL_CREATION_ENABLED", False, raising=False)
+    monkeypatch.setattr(config, "AUTOMATIC_CHANNEL_CREATION_ENABLED", False, raising=False)
 
     api = FakeBitcartAPI()
     _setup_engine_dispatch(monkeypatch, api)
@@ -669,18 +669,18 @@ def test_liquidity_stats_mode_label_lsp_default(monkeypatch):
     assert payload.liquidity_stats.mode == "LSP-managed liquidity"
 
 
-def test_liquidity_stats_mode_label_manual(monkeypatch):
-    """MANUAL_CHANNEL_CREATION_ENABLED=True → 'Manual channel
+def test_liquidity_stats_mode_label_automatic(monkeypatch):
+    """AUTOMATIC_CHANNEL_CREATION_ENABLED=True → 'Automatic channel
     management' — the engine opens channels itself via
     pick_best_channel_partners + move_onchain_to_ln."""
     import importlib, config
     importlib.reload(config)
-    monkeypatch.setattr(config, "MANUAL_CHANNEL_CREATION_ENABLED", True, raising=False)
+    monkeypatch.setattr(config, "AUTOMATIC_CHANNEL_CREATION_ENABLED", True, raising=False)
 
     api = FakeBitcartAPI()
     _setup_engine_dispatch(monkeypatch, api)
     payload = _run(dashboard_mod.compute_dashboard(api, "all"))
-    assert payload.liquidity_stats.mode == "Manual channel management"
+    assert payload.liquidity_stats.mode == "Automatic channel management"
 
 
 def test_recent_tables_empty_when_no_activity(monkeypatch):
