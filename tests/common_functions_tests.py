@@ -291,7 +291,7 @@ class TestTargetFromChannelSizes:
       electrum_reserve = sum( max(channel_size // 100, 20_001) for each)
 
     Pin the max-of-two semantics — this is the topup-goal calculation
-    in the manual-channel-creation path."""
+    in the automatic-channel-creation path."""
 
     def test_single_channel_dust_floor_dominates(self):
         """One 100_000 sat channel: own_reserve = buffer*1, electrum_reserve =

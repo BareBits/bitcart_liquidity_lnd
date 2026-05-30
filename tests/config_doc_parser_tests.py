@@ -232,7 +232,7 @@ def test_descriptions_are_within_sensible_length():
         # Threshold raised to 3500 to accommodate two legitimately long
         # descriptions: PREFER_LN_CASHOUT (trade-off prose covering
         # interactions with PREFER_CASHOUT_ONCHAIN, MIN_CHANNEL_SIZE,
-        # and manual-vs-LSP node selection) and OWN_LIGHTNING_NODES
+        # and automatic-vs-LSP node selection) and OWN_LIGHTNING_NODES
         # (operational guide covering keysend cashouts, the AMP
         # fallback path, rebalance peers, audit-blacklist exemptions,
         # and channel-announce policy). Both carry context operators

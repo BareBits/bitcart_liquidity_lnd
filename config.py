@@ -49,7 +49,7 @@ from common_functions import is_integer, is_float
 #
 # How much inbound Lightning liquidity the script should maintain. When
 # any of these thresholds is missed, liquidity_check requests a new
-# channel (via LSP if MANUAL_CHANNEL_CREATION_ENABLED is False, else
+# channel (via LSP if AUTOMATIC_CHANNEL_CREATION_ENABLED is False, else
 # directly to a peer).
 
 # Always maintain at least this many channels with inbound liquidity.
@@ -73,7 +73,7 @@ MIN_INBOUND_LIQUIDITY_PER_CHANNEL: int = 50_000
 # Currently UNUSED — no code path reads MIN_RESERVE_TOTAL today. The
 # active on-chain reserve floor is computed by
 # `effective_min_reserve_onchain()` from MIN_RESERVE_ONCHAIN (LSP mode)
-# or the MANUAL_* constants (manual mode); see those settings.
+# or the AUTOMATIC_* constants (automatic mode); see those settings.
 # Kept here as a placeholder for a future per-wallet total-reserve
 # enforcement layer. Don't rely on it for current behavior.
 MIN_RESERVE_TOTAL: int = 20_000
@@ -136,8 +136,8 @@ PREFER_CASHOUT_ONCHAIN: bool = False
 # nodes — every cashout-sized batch of on-chain revenue becomes a new
 # routing partner — instead of paying out to a single external address.
 #
-# Works in both manual and LSP modes: regardless of
-# MANUAL_CHANNEL_CREATION_ENABLED, this path always uses manual-mode
+# Works in both automatic and LSP modes: regardless of
+# AUTOMATIC_CHANNEL_CREATION_ENABLED, this path always uses automatic-mode
 # node selection so we control which peer we open to.
 #
 # Wins over PREFER_CASHOUT_ONCHAIN if both are True.
@@ -385,8 +385,8 @@ REFERRAL_SWITCH_TO_ONCHAIN_AFTER_X_DAYS: Optional[int] = 30
 # =============================================================================
 #
 # Operator-facing top-level switch. The dashboard Settings tab renders a
-# single dropdown ("LSP / Manual / Disabled") that writes through to
-# LIQUIDITY_DISABLED + MANUAL_CHANNEL_CREATION_ENABLED (the latter lives
+# single dropdown ("LSP / Automatic / Disabled") that writes through to
+# LIQUIDITY_DISABLED + AUTOMATIC_CHANNEL_CREATION_ENABLED (the latter lives
 # in the LSP-funded block below). Both flags are hidden from the
 # expansion-panel UI so the dropdown is the only authoritative entry
 # point; they remain valid settings for env-var / user_config.py
@@ -406,7 +406,7 @@ LIQUIDITY_DISABLED: bool = False
 # === LSP-funded inbound liquidity ===
 # =============================================================================
 #
-# When MANUAL_CHANNEL_CREATION_ENABLED is False (the default), the
+# When AUTOMATIC_CHANNEL_CREATION_ENABLED is False (the default), the
 # script delegates channel creation to an LSP via the LSPS1 protocol.
 # Quotes are pulled from Zeus (lsps1.lnolymp.us) and Megalithic
 # (megalithic.me); the cheaper one wins, with a slight Zeus preference
@@ -414,14 +414,15 @@ LIQUIDITY_DISABLED: bool = False
 # wallet's on-chain balance.
 
 # False (default) = delegate channel creation to an LSP via LSPS1.
-# True = open channels yourself by selecting peers from a local
-# candidate database, populated daily by querying your own LND node's
-# gossip graph (legacy "pick your own peers" behavior). Most operators
+# True = the script opens channels directly to peers it selects from a
+# local candidate database, populated daily by querying your own LND
+# node's gossip graph (legacy "pick your own peers" behavior — still
+# fully automated, no operator interaction required). Most operators
 # should leave this False; LSPs handle the operational pain (route
 # reliability, channel-policy tuning) for a small one-time fee. When
 # False, the daily gossip pull is skipped entirely — there's no need
 # to maintain a candidate list when channel creation is delegated.
-MANUAL_CHANNEL_CREATION_ENABLED: bool = False
+AUTOMATIC_CHANNEL_CREATION_ENABLED: bool = False
 
 # Channel size requested from the LSP, in sats. This is your INBOUND
 # liquidity per channel — the LSP funds their side, you pay the fee.
@@ -466,43 +467,43 @@ LSP_AUTO_PEER: bool = True
 
 
 # =============================================================================
-# === Manual-mode reserves ===
+# === Automatic-mode reserves ===
 # =============================================================================
 #
-# Only consulted when MANUAL_CHANNEL_CREATION_ENABLED=True. In LSP mode
+# Only consulted when AUTOMATIC_CHANNEL_CREATION_ENABLED=True. In LSP mode
 # the on-chain reserve tracks recent LSP quotes (the LSP-funded inbound
-# liquidity block above); in manual mode the operator pays directly for
+# liquidity block above); in automatic mode the script pays directly for
 # channel opens plus a loop-out to recover the local side as on-chain
 # inbound. These constants estimate that cost.
 #
-# The manual-mode reserve formula is:
+# The automatic-mode reserve formula is:
 #   target_liquidity
-#     + MIN_CHANNEL_COUNT * MANUAL_CHANNEL_OPEN_FEE_ESTIMATE_SAT * 2
-#     + target_liquidity * MANUAL_LIQUIDITY_LOOPOUT_FEE_PERCENT
-#     + MANUAL_RESERVE_SAFETY_SAT
+#     + MIN_CHANNEL_COUNT * AUTOMATIC_CHANNEL_OPEN_FEE_ESTIMATE_SAT * 2
+#     + target_liquidity * AUTOMATIC_LIQUIDITY_LOOPOUT_FEE_PERCENT
+#     + AUTOMATIC_RESERVE_SAFETY_SAT
 # where target_liquidity = max(MIN_INBOUND_LIQUIDITY,
 #                              MIN_INBOUND_LIQUIDITY_PER_CHANNEL * MIN_CHANNEL_COUNT).
 
 # Per-channel on-chain fee estimate for opening (and later closing) a
-# channel in manual-creation mode. The formula multiplies this by
+# channel in automatic-creation mode. The formula multiplies this by
 # (MIN_CHANNEL_COUNT * 2) to cover one open and one close per channel.
 # Default 1000 sat — conservative for a low-priority funding tx.
 # Raise it if you typically open at higher fee targets.
-MANUAL_CHANNEL_OPEN_FEE_ESTIMATE_SAT: int = 1_000
+AUTOMATIC_CHANNEL_OPEN_FEE_ESTIMATE_SAT: int = 1_000
 
-# Loop-out cost as a fraction of target inbound liquidity. The manual-
-# mode reserve assumes the operator will fund their inbound liquidity
-# by opening channels and looping the local side back out to on-chain;
+# Loop-out cost as a fraction of target inbound liquidity. The automatic-
+# mode reserve assumes the script will fund inbound liquidity by opening
+# channels and looping the local side back out to on-chain;
 # this captures the swap-fee portion of that operation. 0.01 = 1%.
-MANUAL_LIQUIDITY_LOOPOUT_FEE_PERCENT: float = 0.01
+AUTOMATIC_LIQUIDITY_LOOPOUT_FEE_PERCENT: float = 0.01
 
-# Safety buffer added on top of the manual-mode reserve floor. Also
+# Safety buffer added on top of the automatic-mode reserve floor. Also
 # acts as a hysteresis zone for low-on-chain warnings: if the wallet
 # is within this many sats of the reserve floor, top-up warnings (log
 # + SMTP) are suppressed. Action gates (refuse to open new channels,
 # refuse to move on-chain to LN) still fire — the safety zone is only
 # about not pestering the operator inside small fluctuations.
-MANUAL_RESERVE_SAFETY_SAT: int = 1_000
+AUTOMATIC_RESERVE_SAFETY_SAT: int = 1_000
 
 
 # =============================================================================
@@ -1033,7 +1034,7 @@ RUN_FREQUENCY_FEE_CALCULATION: int = 86_400
 
 # How often (seconds) to refresh the list of candidate Lightning nodes
 # from the developer node-list endpoint. 86_400 = once per day. Only
-# relevant in the legacy manual-channel-open path.
+# relevant in the legacy automatic-channel-open path.
 RUN_FREQUENCY_PULL_DEV_NODES: int = 86_400
 
 # Legacy; no longer consulted. Historical default 46_400 seconds
@@ -1076,12 +1077,12 @@ GOSSIP_MIN_UPTIME_SECONDS: int = 15
 GOSSIP_MAX_STALENESS_DAYS: int = 7
 
 # Minimum total channel capacity (sats) a candidate Lightning node must
-# have for the legacy manual-channel-open path to consider it. Filters
+# have for the legacy automatic-channel-open path to consider it. Filters
 # out tiny/test nodes. Typical: 1_000_000 (1M).
 NODE_CRITERIA_MINIMUM_CAPACITY: int = 1_000_000
 
 # Minimum number of channels a candidate Lightning node must already
-# have for the legacy manual-channel-open path to consider it. Filters
+# have for the legacy automatic-channel-open path to consider it. Filters
 # out newly-launched nodes. Counts every announced channel, including
 # ones the node operator has disabled or stopped gossiping policies
 # for — see NODE_CRITERIA_MIN_EFFECTIVE_DEGREE below for the stricter
@@ -1281,15 +1282,15 @@ NODE_CRITERIA_OUTBOUND_CAPACITY_MULTIPLIER: int = 10
 MIN_INBOUND_LIQUIDITY_REQUEST_AMOUNT: int = 50_000
 
 # Don't move less than this from on-chain to LN when rebalancing.
-# Legacy MANUAL_CHANNEL_CREATION knob.
+# Legacy AUTOMATIC_CHANNEL_CREATION knob.
 MIN_ONCHAIN_TO_LN_MOVEMENT: int = 20_000
 
 # Initial channel size for the first channel opened on a fresh wallet.
-# Used in the legacy manual-channel-open path.
+# Used in the legacy automatic-channel-open path.
 INITIAL_CHANNEL_SIZE: int = 20_000
 
 # Target inbound liquidity to request per channel-open in the legacy
-# manual-channel-open path. LSP path uses LSP_CHANNEL_SIZE_SAT instead.
+# automatic-channel-open path. LSP path uses LSP_CHANNEL_SIZE_SAT instead.
 TARGET_INBOUND_LIQUIDITY: int = 500_000
 
 

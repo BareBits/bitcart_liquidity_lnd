@@ -330,7 +330,7 @@ def test_move_onchain_to_ln_uses_direct_lnd_rpc_with_csv_params(monkeypatch, eve
     """
     import liquidityhelper as lh
     from node_database import LightningNode
-    monkeypatch.setattr(lh, "MANUAL_CHANNEL_CREATION_ENABLED", True, raising=False)
+    monkeypatch.setattr(lh, "AUTOMATIC_CHANNEL_CREATION_ENABLED", True, raising=False)
     monkeypatch.setattr(lh, "LND_MAX_LOCAL_CSV_BLOCKS", 144, raising=False)
     monkeypatch.setattr(lh, "LND_REMOTE_CSV_DELAY_BLOCKS", 0, raising=False)
     monkeypatch.setattr(lh, "LND_CHANNEL_OPEN_TARGET_CONF", 12, raising=False)
@@ -448,7 +448,7 @@ def test_direct_channel_cashout_threads_csv_to_open_channel_sync(monkeypatch, ev
     OpenChannelSync. When 0, the field is omitted (LND auto-scales)."""
     import liquidityhelper as lh
     from node_database import LightningNode
-    monkeypatch.setattr(lh, "MANUAL_CHANNEL_CREATION_ENABLED", True, raising=False)
+    monkeypatch.setattr(lh, "AUTOMATIC_CHANNEL_CREATION_ENABLED", True, raising=False)
     monkeypatch.setattr(lh, "LND_MAX_LOCAL_CSV_BLOCKS", 144, raising=False)
     monkeypatch.setattr(lh, "LND_REMOTE_CSV_DELAY_BLOCKS", 288, raising=False)
     monkeypatch.setattr(lh, "DRY_RUN_FUNDS", False, raising=False)

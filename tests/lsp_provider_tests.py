@@ -33,7 +33,7 @@ from tests._lsp_mock import MockLSPServer
 
 def _set(monkeypatch, **kw):
     defaults = {
-        "MANUAL_CHANNEL_CREATION_ENABLED": False,
+        "AUTOMATIC_CHANNEL_CREATION_ENABLED": False,
         "LSP_CHANNEL_SIZE_SAT": 150_000,
         "LSP_CHANNEL_EXPIRY_BLOCKS": 52_596,
         "LSP_MIN_ONCHAIN_FOR_QUOTE_SAT": 1_000,

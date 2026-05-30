@@ -61,7 +61,7 @@ from .config_doc_parser import parse_config_module
 # dashboard Settings tab's "Liquidity management mode" dropdown is the
 # authoritative entry point for these.
 _HIDDEN_FROM_UI: Dict[str, str] = {
-    "MANUAL_CHANNEL_CREATION_ENABLED": (
+    "AUTOMATIC_CHANNEL_CREATION_ENABLED": (
         "owned by the Liquidity management mode dropdown"
     ),
     "LIQUIDITY_DISABLED": (

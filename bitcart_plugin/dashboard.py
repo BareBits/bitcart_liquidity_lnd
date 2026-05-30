@@ -229,8 +229,8 @@ class LiquidityStats(BaseModel):
     strategy is configured."""
     # Human-readable label of the current liquidity-management mode.
     # Mirrors the engine gate at liquidityhelper.move_onchain_to_ln:
-    #   MANUAL_CHANNEL_CREATION_ENABLED=True  → "Manual channel management"
-    #   MANUAL_CHANNEL_CREATION_ENABLED=False → "LSP-managed liquidity"
+    #   AUTOMATIC_CHANNEL_CREATION_ENABLED=True  → "Automatic channel management"
+    #   AUTOMATIC_CHANNEL_CREATION_ENABLED=False → "LSP-managed liquidity"
     # The False default means the engine delegates new-channel acquisition
     # to an LSP via pick_best_lsp_for_inbound.
     mode: str
@@ -972,9 +972,9 @@ async def _detect_bitcoin_network(api: Any) -> str:
 def _liquidity_mode_label() -> str:
     """Human-readable label for the current liquidity-management mode.
 
-    Reads LIQUIDITY_DISABLED + MANUAL_CHANNEL_CREATION_ENABLED from
+    Reads LIQUIDITY_DISABLED + AUTOMATIC_CHANNEL_CREATION_ENABLED from
     config. Mirrors the engine gates at liquidityhelper.run_tick_loop
-    (paused when LIQUIDITY_DISABLED) and move_onchain_to_ln (manual
+    (paused when LIQUIDITY_DISABLED) and move_onchain_to_ln (automatic
     vs LSP). Defaults to the LSP label on any config-read failure so
     the UI still renders.
     """
@@ -982,8 +982,8 @@ def _liquidity_mode_label() -> str:
         import config as _cfg
         if bool(getattr(_cfg, "LIQUIDITY_DISABLED", False)):
             return "Disabled (tick loop paused)"
-        if bool(getattr(_cfg, "MANUAL_CHANNEL_CREATION_ENABLED", False)):
-            return "Manual channel management"
+        if bool(getattr(_cfg, "AUTOMATIC_CHANNEL_CREATION_ENABLED", False)):
+            return "Automatic channel management"
         return "LSP-managed liquidity"
     except Exception as e:
         logger.warning(f"_liquidity_mode_label: config import failed: {e} {traceback.format_exc()}")
@@ -1124,7 +1124,7 @@ async def _compute_topup_warning(api: Any) -> TopupWarning:
     operator pays exactly what the worker would otherwise solicit).
 
     Suppression rules:
-      - Deficit <= MANUAL_RESERVE_SAFETY_SAT: hysteresis zone — same
+      - Deficit <= AUTOMATIC_RESERVE_SAFETY_SAT: hysteresis zone — same
         threshold the worker uses to suppress the email warning;
         keeps the dashboard from flapping when the wallet drifts
         within fee-rounding distance of the floor.
@@ -1139,7 +1139,7 @@ async def _compute_topup_warning(api: Any) -> TopupWarning:
     rows: List[TopupDeficitRow] = []
     try:
         from liquidityhelper import (
-            store_needs_topup, MANUAL_RESERVE_SAFETY_SAT,
+            store_needs_topup, AUTOMATIC_RESERVE_SAFETY_SAT,
             TOPUP_NAME, TOPUP_BAREBITS,
             btc_address_from_invoice,
         )
@@ -1159,7 +1159,7 @@ async def _compute_topup_warning(api: Any) -> TopupWarning:
             deficit = await store_needs_topup(api, store["id"])
             if not deficit:
                 continue
-            if deficit <= MANUAL_RESERVE_SAFETY_SAT:
+            if deficit <= AUTOMATIC_RESERVE_SAFETY_SAT:
                 # Same hysteresis the engine applies to its own warning
                 # path — keeps small fee-rounding deficits silent.
                 continue

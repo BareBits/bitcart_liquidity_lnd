@@ -75,9 +75,9 @@ def test_pick_best_lsp_for_inbound_skips_non_lnd_wallet(monkeypatch, event_loop)
     """An Electrum wallet returns None without contacting any LSP
     provider. Defense-in-depth — the caller is already guarded, but
     we don't want a future direct caller bypassing. This test
-    explicitly disables MANUAL_CHANNEL_CREATION_ENABLED so the test
+    explicitly disables AUTOMATIC_CHANNEL_CREATION_ENABLED so the test
     deliberately reaches the currency guard."""
-    monkeypatch.setattr(liquidityhelper, "MANUAL_CHANNEL_CREATION_ENABLED", False)
+    monkeypatch.setattr(liquidityhelper, "AUTOMATIC_CHANNEL_CREATION_ENABLED", False)
     wallet = {"id": "wE", "currency": "btc"}
     result = event_loop.run_until_complete(
         liquidityhelper.pick_best_lsp_for_inbound(
