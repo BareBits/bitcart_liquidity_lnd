@@ -6036,26 +6036,48 @@ async def calculate_topups(
             )
             fetched_wallet = await api.get_best_ln_wallet_for_store(store)
             amount_remaining = store_needs_topup_result+1000 #(add 1000 sats as a buffer)
-            found_own_invoice = await api.get_invoice_by_note(note=TOPUP_NAME,require_unlimited=True)
+            # Reuse any pending TOPUP_NAME invoice for this store rather
+            # than creating a fresh one each tick. Bitcart only generates
+            # an on-chain payment_address when an invoice has a non-zero
+            # price, so we price the new invoice at the current deficit
+            # (in BTC). If the deficit later drifts the URI amount can
+            # become stale, but the bare on-chain address still accepts
+            # any amount; the operator pastes the address and pays
+            # whatever they choose. A fresh invoice is created only once
+            # the prior one is paid (status flips off "pending") or
+            # expires.
+            #
+            # Discard any pending invoice that lacks an on-chain address:
+            # it's a stale price=0 invoice from an older build (Bitcart
+            # never gave it payment methods, so it'll sit pending
+            # forever). Without this fallback, get_invoice_by_note
+            # would keep returning the unusable invoice and we'd never
+            # create a real one.
+            topup_price_btc = sats_to_btc(amount_remaining)
+            found_own_invoice = await api.get_invoice_by_note(note=TOPUP_NAME,require_pending=True)
+            if found_own_invoice and not btc_address_from_invoice(found_own_invoice):
+                found_own_invoice = None
             if not found_own_invoice:
                 found_own_invoice = await api.create_invoice(
-                    price_in_btc=0,
+                    price_in_btc=topup_price_btc,
                     store_id=store["id"],
                     currency="BTC",
                     notes=TOPUP_NAME,
-                    expiration_in_seconds=2628000,
+                    expiration_in_minutes=43_200,  # 30 days
                 )
             found_barebits_invoice = await api.get_invoice_by_note(
                 note=TOPUP_BAREBITS,
-                require_unlimited=True,
+                require_pending=True,
             )
+            if found_barebits_invoice and not btc_address_from_invoice(found_barebits_invoice):
+                found_barebits_invoice = None
             if not found_barebits_invoice:
                 found_barebits_invoice = await api.create_invoice(
-                    price_in_btc=0,
+                    price_in_btc=topup_price_btc,
                     store_id=store["id"],
                     currency="BTC",
                     notes=TOPUP_BAREBITS,
-                    expiration_in_seconds=2628000,
+                    expiration_in_minutes=43_200,  # 30 days
                 )
             if not found_own_invoice or not found_barebits_invoice:
                 logger.error("Error in calculate_topups, invoice missing!")

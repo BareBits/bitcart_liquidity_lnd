@@ -856,18 +856,23 @@ class BitcartAPI:
             _log_api_failure("get_stores", e)
             return None
     async def get_invoice_by_note(self, limit: int = 250,
-                           note:Optional[str]=None,require_unlimited:bool=False) -> Optional[List[Dict]]:
+                           note:Optional[str]=None,require_pending:bool=False) -> Optional[List[Dict]]:
         """
         Returns the first invoice found which matches note and is not expired
 
         Args:
             limit: Maximum number of invoices to scan (default: 250).
             note: the note to search for
-            require_unlimited: require returned invoice have no invoice amount
+            require_pending: only return invoices with status == "pending"
+                (skip paid / complete / expired / invalid). Used by the
+                topup-invoice flow so a paid-and-still-listed invoice
+                doesn't get reused instead of creating a fresh one for
+                the next deficit.
 
         Returns:
-            First invoice dict matching `note` with `time_left > 90` (and, if
-            require_unlimited=True, price == 0); None if not found or on error.
+            First invoice dict matching `note` with `time_left > 90` (and,
+            if require_pending=True, status == "pending"); None if not
+            found or on error.
         """
         try:
             params = {
@@ -885,8 +890,8 @@ class BitcartAPI:
                 for invoice in jsoned['result']:
                     if invoice['notes']==note:
                         if invoice['time_left']>90:
-                            if require_unlimited:
-                                if float(invoice['price'])==0.00:
+                            if require_pending:
+                                if invoice.get('status') == 'pending':
                                     return invoice
                             else:
                                 return invoice
@@ -1262,7 +1267,7 @@ class BitcartAPI:
     async def create_invoice(self, price_in_btc: Optional[float], store_id: int, currency: str = "USD",
                              order_id: str = None, description: str = "",
                              buyer_email: str = "", notification_url: str = "",
-                             redirect_url: str = "", expiration_in_seconds:Optional[int]=None, notes:Optional[str]='') -> Optional[Dict]:
+                             redirect_url: str = "", expiration_in_minutes:Optional[int]=None, notes:Optional[str]='') -> Optional[Dict]:
         """
         Create a new invoice.
 
@@ -1275,8 +1280,14 @@ class BitcartAPI:
             buyer_email: Buyer's email address
             notification_url: URL for webhook notifications
             redirect_url: URL to redirect after payment
-            expiration_in_seconds: optional invoice expiration in seconds; passed through
-                as the API's `expiration` field.
+            expiration_in_minutes: optional invoice expiration in MINUTES;
+                passed through as the API's `expiration` field, which
+                Bitcart stores in minutes and multiplies by 60 to derive
+                `expiration_seconds` server-side. Values that exceed
+                LND's 1-year (525,600 minutes) max expiry on lightning-
+                enabled wallets will cause Bitcart's payment-method
+                creation to throw, leaving the invoice with no
+                payments rows.
             notes: optional free-text tag stored on the invoice; only included in the
                 request when truthy. Used by topup-invoice flow (TOPUP_NAME / TOPUP_BAREBITS).
 
@@ -1296,7 +1307,7 @@ class BitcartAPI:
                 "notification_url": notification_url,
                 "redirect_url": redirect_url,
                 "description": description,
-                'expiration': expiration_in_seconds,
+                'expiration': expiration_in_minutes,
             }
             if notes:
                 invoice_data['notes']=notes

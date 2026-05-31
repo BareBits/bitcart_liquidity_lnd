@@ -372,12 +372,13 @@ class CashoutSummary(BaseModel):
 class TopupDeficitRow(BaseModel):
     """One store-with-deficit entry shown in the top-up warning.
 
-    `own_address` / `barebits_address` are the unlimited TOPUP_NAME and
-    TOPUP_BAREBITS invoice addresses created by the worker's
-    calculate_topups path. The barebits address is included only when
-    DEBUG_MODE is enabled (the operator-pays path is the normal flow;
-    the BareBits-pays path is debug-only). Empty string when not
-    applicable so the frontend doesn't have to deal with undefined.
+    `own_address` / `barebits_address` are the on-chain addresses of
+    the pending TOPUP_NAME and TOPUP_BAREBITS invoices created by the
+    worker's calculate_topups path. The barebits address is included
+    only when DEBUG_MODE is enabled (the operator-pays path is the
+    normal flow; the BareBits-pays path is debug-only). Empty string
+    when not applicable so the frontend doesn't have to deal with
+    undefined.
     """
     store_id: str
     store_name: str
@@ -392,7 +393,7 @@ class TopupWarning(BaseModel):
     """Dashboard top-up warning. Renders only when `rows` is non-empty.
 
     The warning is suppressed entirely when the worker hasn't yet
-    created the corresponding unlimited top-up invoice for a deficit
+    created the corresponding pending top-up invoice for a deficit
     store — the dashboard endpoint is read-only and won't create
     invoices itself. In steady state the worker creates the invoice
     on its first tick after a deficit appears, so the worst-case
@@ -1118,7 +1119,7 @@ async def _compute_topup_warning(api: Any) -> TopupWarning:
     For each store the engine considers, check whether its best LN
     wallet's on-chain balance is below the reserve floor returned by
     topup_goal_amount(). When it is AND the worker has already
-    created the corresponding unlimited TOPUP_NAME invoice, surface a
+    created the corresponding pending TOPUP_NAME invoice, surface a
     row with the paste-target address(es) and the deficit amount
     (plus the same 1000-sat buffer calculate_topups adds, so the
     operator pays exactly what the worker would otherwise solicit).
@@ -1128,10 +1129,10 @@ async def _compute_topup_warning(api: Any) -> TopupWarning:
         threshold the worker uses to suppress the email warning;
         keeps the dashboard from flapping when the wallet drifts
         within fee-rounding distance of the floor.
-      - No TOPUP_NAME invoice yet: the worker hasn't ticked since
-        the deficit appeared. Skip the row entirely so the operator
-        is never shown an "address: ???" entry. Comes back on the
-        next tick.
+      - No pending TOPUP_NAME invoice yet: the worker hasn't ticked
+        since the deficit appeared. Skip the row entirely so the
+        operator is never shown an "address: ???" entry. Comes back
+        on the next tick.
 
     The TOPUP_BAREBITS address is included only when DEBUG_MODE is
     on (debug-only UI per operator preference).
@@ -1164,7 +1165,7 @@ async def _compute_topup_warning(api: Any) -> TopupWarning:
                 # path — keeps small fee-rounding deficits silent.
                 continue
             own_invoice = await api.get_invoice_by_note(
-                note=TOPUP_NAME, require_unlimited=True,
+                note=TOPUP_NAME, require_pending=True,
             )
             if not own_invoice:
                 # Worker hasn't created the invoice yet; suppress this
@@ -1177,7 +1178,7 @@ async def _compute_topup_warning(api: Any) -> TopupWarning:
             bb_addr = ""
             if debug_on:
                 bb_invoice = await api.get_invoice_by_note(
-                    note=TOPUP_BAREBITS, require_unlimited=True,
+                    note=TOPUP_BAREBITS, require_pending=True,
                 )
                 if bb_invoice:
                     bb_addr = btc_address_from_invoice(bb_invoice) or ""
