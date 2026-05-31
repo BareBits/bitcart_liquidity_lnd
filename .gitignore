@@ -4,7 +4,13 @@ user_config.py
 *.log
 *.iml
 *.idea
+# Ignore generated data JSON (e.g. default_channel_partners.json from
+# node_db_to_json.py, wallet-debug export bundles) by default, but keep
+# the plugin packaging files that Bitcart needs to install/build the
+# plugin (the backend manifest and the admin module's package.json).
 *.json
+!/manifest.json
+!/admin/modules/@barebits/liquidityhelper/package.json
 .venv/
 venv/
 __pycache__/

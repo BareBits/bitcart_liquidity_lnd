@@ -1,0 +1,9 @@
+{
+  "name": "@barebits/liquidityhelper",
+  "version": "0.2.0",
+  "license": "MIT",
+  "description": "Admin UI for the Bitcart Liquidity Helper plugin: settings + log viewer + dashboard.",
+  "dependencies": {
+    "chart.js": "^4.4.0"
+  }
+}
