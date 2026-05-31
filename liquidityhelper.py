@@ -2525,6 +2525,7 @@ async def new_calc_invoice_stats(
             ineligible_revenue_because_of_promo_in_sats=0,
             ineligible_revenue_because_of_topups_in_sats=0,
             ineligible_revenue_because_of_bb_topups_in_sats=0,
+            total_bb_topup_principal_returned_in_sats=0,
             ln_network_fees_paid_for_bb_topup_returns_in_sats=0,
             onchain_network_fees_paid_for_bb_topup_returns_in_sats=0,
             ln_network_fees_paid_for_fee_payments_in_sats=0,
@@ -2533,7 +2534,6 @@ async def new_calc_invoice_stats(
             onchain_network_fees_paid_for_payouts_in_sats=0,
             ineligible_revenue_because_not_liquidityhelper_wallet_in_sats=0,
             revenue_eligible_for_fee=0,
-            ineligible_revenue_because_not_ln_transaction_in_sats=0,
             onchain_network_fees_paid_for_channel_opens_in_sats=0,
             onchain_network_fees_paid_for_channel_closes_in_sats=0,
             onchain_network_fees_paid_for_swaps_in_sats=0,
@@ -2631,13 +2631,6 @@ async def new_calc_invoice_stats(
                         ineligible = True
                     elif full_wallet['name'] != "liquidityhelper":
                         store_stats.ineligible_revenue_because_not_liquidityhelper_wallet_in_sats += (
-                            amount_in_sats
-                        )
-                        ineligible = True
-                    elif (
-                        payment["lightning"] and not CHARGE_FEE_FOR_ONCHAIN_TRANSACTIONS
-                    ):
-                        store_stats.ineligible_revenue_because_not_ln_transaction_in_sats += (
                             amount_in_sats
                         )
                         ineligible = True
@@ -2836,6 +2829,16 @@ async def new_calc_invoice_stats(
                     # routing fee is real cost; count it toward
                     # network fees so it eats into the 2% dev-fee cap.
                     store_stats.ln_network_fees_paid_for_rebalances_in_sats += abs(transaction['fee_msat']/1000)
+                    continue
+                if transaction['label'] == BB_TOPUP_RETURN_REASON:
+                    # BareBits-topup return payment. The PRINCIPAL goes
+                    # into total_bb_topup_principal_returned_in_sats so
+                    # calc_bb_topup_pool_owed() reflects what's left to
+                    # repay. The ROUTING FEE counts against the dev's
+                    # 2% cap (same policy as dev-fee delivery cost)
+                    # via the existing bb_topup_returns LN bucket.
+                    store_stats.ln_network_fees_paid_for_bb_topup_returns_in_sats += abs(transaction['fee_msat']/1000)
+                    store_stats.total_bb_topup_principal_returned_in_sats += abs(transaction['amount_msat']/1000)
                     continue
                 else:
                     store_stats.misc_ln_network_fees_in_sats+=abs(transaction['fee_msat']/1000)
@@ -4156,6 +4159,21 @@ async def calculate_fees(api: BitcartAPI) -> Optional[bool]:
                 api, store_id, wallet_to_use, int(remaining_fees_due),
             )
 
+        # ---------------- BareBits topup return (LN-only) --------------
+        # Repays the principal BareBits has paid into the store's wallet
+        # via TOPUP_BAREBITS invoices. Independent of the 2% dev fee —
+        # gated by inbound-liquidity-met so we don't return funds before
+        # the channels we just funded with the topup have actually been
+        # provisioned. LN-only; no on-chain fallback. Drains LN outbound
+        # as far as channel reserves allow (bypassing the on-chain
+        # cashout-reserve safety logic), capped at MIN_FEE_OUT on the low
+        # end so we don't dust-LN-pay.
+        bb_pool_owed = calculated_cashout.calc_bb_topup_pool_owed()
+        if bb_pool_owed > 0:
+            await _maybe_pay_bb_topup_return_via_ln(
+                api, store_id, wallet_to_use, bb_pool_owed,
+            )
+
         # ---------------- referral fee (try-LN-first, flat) ------------
         if REFERRAL_FEE_AMOUNT > 0:
             remaining_referral_due = (
@@ -4284,6 +4302,116 @@ async def _pay_dev_fee_via_ln(
         )
         return True
     logger.error('Failed to pay fee via LN!')
+    return False
+
+
+async def _maybe_pay_bb_topup_return_via_ln(
+    api: BitcartAPI, store_id: str, wallet_to_use: dict, pool_owed: int,
+) -> bool:
+    """LN-only BareBits-topup return payment.
+
+    Sends min(pool_owed, wallet LN outbound) back to LN_FEE_DEST under
+    the BB_TOPUP_RETURN_REASON label, iff:
+      - inbound liquidity meets the store's target (store_needs_
+        liquidity returns None) — otherwise channels just funded by
+        this topup may still be confirming and the return is premature
+      - LN payment is enabled (ENABLE_FEE_SENDING_LN)
+      - LN_FEE_DEST is configured
+      - the sendable amount is at least MIN_FEE_OUT (dust LN pays
+        won't route)
+
+    Bypasses the on-chain cashout-reserve safety check on purpose —
+    BB return takes priority over keeping headroom for future channel
+    opens. The user-facing tradeoff is that the wallet can end up
+    below its topup_goal after the return, which simply triggers
+    the normal topup-warning surface on the next tick.
+
+    Returns True iff a payment was sent successfully. Failures (LN
+    routing failure, LSP-side issue, etc.) are logged but never
+    escalate to on-chain — the return waits for LN to recover.
+    """
+    if not ENABLE_FEE_SENDING_LN:
+        logger.warning(
+            "BB topup return: skipping due to not ENABLE_FEE_SENDING_LN"
+        )
+        return False
+    if not LN_FEE_DEST:
+        logger.warning(
+            "BB topup return: skipping due to LN_FEE_DEST unset"
+        )
+        return False
+    # Inbound-liquidity gate. store_needs_liquidity returns None when
+    # the store has met both MIN_INBOUND_LIQUIDITY and MIN_CHANNEL_COUNT
+    # — that's when we know the channels funded by this topup have
+    # actually been provisioned and it's safe to start repaying.
+    try:
+        liquidity_need = await store_needs_liquidity(store_id, api)
+    except Exception as e:
+        logger.warning(
+            f"BB topup return: store_needs_liquidity raised for store "
+            f"{store_id}: {e} {traceback.format_exc()}"
+        )
+        return False
+    if liquidity_need is not None:
+        log_decision(
+            ("bb_topup_return_gate", store_id), "inbound_not_met",
+            "BB topup return: store %s inbound liquidity not yet "
+            "at target (liquidity_needed=%d, channels_needed=%d) — "
+            "deferring return of %d sat until channels are provisioned",
+            store_id, liquidity_need.liquidity_needed_sat,
+            liquidity_need.channels_needed, int(pool_owed),
+        )
+        return False
+    try:
+        wallet_max_payout = int(
+            await api.get_outbound_liquidity(wallet_to_use["id"])
+        )
+    except Exception as e:
+        logger.warning(
+            f"BB topup return: failed reading outbound for store "
+            f"{store_id}: {e} {traceback.format_exc()}"
+        )
+        return False
+    amount = min(int(pool_owed), wallet_max_payout)
+    if amount < MIN_FEE_OUT:
+        log_decision(
+            ("bb_topup_return_gate", store_id), "below_min_fee_out",
+            "BB topup return: store %s sendable amount %d < "
+            "MIN_FEE_OUT=%d (pool_owed=%d, ln_outbound=%d) — waiting "
+            "for more LN balance before sending",
+            store_id, amount, int(MIN_FEE_OUT), int(pool_owed),
+            wallet_max_payout,
+        )
+        return False
+    if DRY_RUN_FUNDS:
+        logger.warning(
+            f"BB topup return: skipping due to DRY_RUN_FUNDS "
+            f"(would have sent {amount} sat to {LN_FEE_DEST})"
+        )
+        return False
+    # Comment distinguishes BB-return payments from dev-fee payments
+    # on the receive side. Same LUD-12 mechanic as the dev fee.
+    invoice = await lnurl_to_invoice(
+        LN_FEE_DEST, amount,
+        comment=f"storeid:{BB_STOREID}:bb_topup_return",
+    )
+    if not invoice:
+        return False
+    ok = await electrum_pay_ln_invoice(
+        invoice, BB_TOPUP_RETURN_REASON, wallet=wallet_to_use, api=api,
+    )
+    if ok:
+        log_event(
+            "BB topup return sent: %s (wallet …%s, pool_remaining ≈ %s)",
+            fmt_btc_sats(amount),
+            wallet_short(wallet_to_use.get("id")),
+            fmt_btc_sats(max(0, int(pool_owed) - amount)),
+        )
+        return True
+    logger.error(
+        "BB topup return: LN payment to %s for %d sat failed (store %s)",
+        LN_FEE_DEST, amount, store_id,
+    )
     return False
 
 

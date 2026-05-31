@@ -311,14 +311,6 @@ ENABLE_FEE_SENDING: bool = True
 # stale), fees go on-chain instead. Most operators leave this True.
 ENABLE_FEE_SENDING_LN: bool = True
 
-# Calculate fees against LN-revenue invoices. Set False only if you've
-# negotiated an exception for LN volume. Default True.
-CHARGE_FEE_FOR_LN_TRANSACTIONS: bool = True
-
-# Calculate fees against on-chain revenue invoices. Default True;
-# same caveat as above.
-CHARGE_FEE_FOR_ONCHAIN_TRANSACTIONS: bool = True
-
 # Subtract on-chain network fees (channel opens, swaps, LSP fees,
 # cashout txs) from the developer fee. Net effect: you pay 2% TOTAL,
 # the developer share shrinks as network costs rise. Default True
@@ -995,6 +987,14 @@ SKIP_WALLET_DELAY: bool = False
 # Transaction label for developer-fee payments. Used to identify them
 # in payment history; changing it breaks fee-accounting against old txs.
 FEE_PAYOUT_REASON = "lnhelper_fee"
+
+# Transaction label for BareBits-topup return payments. Identifies the
+# LN payments the engine sends back to LN_FEE_DEST under the BB-topup
+# return mechanic: when BareBits has paid a TOPUP_BAREBITS invoice into
+# the operator's wallet, the engine returns the principal over
+# subsequent fee-payment ticks. Same name caveat as FEE_PAYOUT_REASON
+# — renaming this orphans any unreturned topups from old installs.
+BB_TOPUP_RETURN_REASON = "lnhelper_bb_topup_return"
 
 # Transaction label for cashout payments. Same caveat as above.
 CASHOUT_REASON = "lnhelper_cashout"
