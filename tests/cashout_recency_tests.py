@@ -145,7 +145,7 @@ def test_do_cashouts_runs_both_legs_when_ln_healthy(monkeypatch, event_loop):
     monkeypatch.setattr(liquidityhelper, "ENABLE_CASHOUT_ONCHAIN", True)
     monkeypatch.setattr(liquidityhelper, "PREFER_CASHOUT_ONCHAIN", False)
     monkeypatch.setattr(liquidityhelper, "CASHOUT_SWITCH_TO_ONCHAIN_AFTER_X_DAYS", 7)
-    monkeypatch.setattr(liquidityhelper, "CASHOUT_ONCHAIN", "bc1qfakedest")
+    monkeypatch.setattr(liquidityhelper, "CASHOUT_ONCHAIN_XPUB", "bc1qfakedest")
 
     SimpleDateTimeField.replace(
         name="LAST_SUCCESSFUL_LN_CASHOUT_PAYMENT",
@@ -168,7 +168,7 @@ def test_do_cashouts_falls_back_to_onchain_when_ln_fails_and_stale(monkeypatch, 
     monkeypatch.setattr(liquidityhelper, "ENABLE_CASHOUT_ONCHAIN", True)
     monkeypatch.setattr(liquidityhelper, "PREFER_CASHOUT_ONCHAIN", False)
     monkeypatch.setattr(liquidityhelper, "CASHOUT_SWITCH_TO_ONCHAIN_AFTER_X_DAYS", 7)
-    monkeypatch.setattr(liquidityhelper, "CASHOUT_ONCHAIN", "bc1qfakedest")
+    monkeypatch.setattr(liquidityhelper, "CASHOUT_ONCHAIN_XPUB", "bc1qfakedest")
 
     SimpleDateTimeField.replace(
         name="LAST_SUCCESSFUL_LN_CASHOUT_PAYMENT",
@@ -215,7 +215,7 @@ def test_do_cashouts_ln_success_auto_resets_staleness(monkeypatch, event_loop):
     monkeypatch.setattr(liquidityhelper, "ENABLE_CASHOUT_ONCHAIN", True)
     monkeypatch.setattr(liquidityhelper, "PREFER_CASHOUT_ONCHAIN", False)
     monkeypatch.setattr(liquidityhelper, "CASHOUT_SWITCH_TO_ONCHAIN_AFTER_X_DAYS", 7)
-    monkeypatch.setattr(liquidityhelper, "CASHOUT_ONCHAIN", "bc1qfakedest")
+    monkeypatch.setattr(liquidityhelper, "CASHOUT_ONCHAIN_XPUB", "bc1qfakedest")
 
     # LN has been stale for 30 days, but now LN works.
     SimpleDateTimeField.replace(
@@ -240,7 +240,7 @@ def test_do_cashouts_ln_failure_NOT_stale_skips_drain(monkeypatch, event_loop):
     monkeypatch.setattr(liquidityhelper, "ENABLE_CASHOUT_ONCHAIN", True)
     monkeypatch.setattr(liquidityhelper, "PREFER_CASHOUT_ONCHAIN", False)
     monkeypatch.setattr(liquidityhelper, "CASHOUT_SWITCH_TO_ONCHAIN_AFTER_X_DAYS", 7)
-    monkeypatch.setattr(liquidityhelper, "CASHOUT_ONCHAIN", "bc1qfakedest")
+    monkeypatch.setattr(liquidityhelper, "CASHOUT_ONCHAIN_XPUB", "bc1qfakedest")
 
     # Recent LN success.
     SimpleDateTimeField.replace(
@@ -279,7 +279,7 @@ def test_do_cashouts_no_drain_when_no_ln_history(monkeypatch, event_loop):
     monkeypatch.setattr(liquidityhelper, "ENABLE_CASHOUT_ONCHAIN", True)
     monkeypatch.setattr(liquidityhelper, "PREFER_CASHOUT_ONCHAIN", False)
     monkeypatch.setattr(liquidityhelper, "CASHOUT_SWITCH_TO_ONCHAIN_AFTER_X_DAYS", 7)
-    monkeypatch.setattr(liquidityhelper, "CASHOUT_ONCHAIN", "bc1qfakedest")
+    monkeypatch.setattr(liquidityhelper, "CASHOUT_ONCHAIN_XPUB", "bc1qfakedest")
 
     # No SimpleDateTimeField row at all.
     called = _record_called_paths(monkeypatch)
@@ -297,7 +297,7 @@ def test_do_cashouts_no_drain_when_threshold_disabled(monkeypatch, event_loop):
     monkeypatch.setattr(liquidityhelper, "ENABLE_CASHOUT_ONCHAIN", True)
     monkeypatch.setattr(liquidityhelper, "PREFER_CASHOUT_ONCHAIN", False)
     monkeypatch.setattr(liquidityhelper, "CASHOUT_SWITCH_TO_ONCHAIN_AFTER_X_DAYS", None)
-    monkeypatch.setattr(liquidityhelper, "CASHOUT_ONCHAIN", "bc1qfakedest")
+    monkeypatch.setattr(liquidityhelper, "CASHOUT_ONCHAIN_XPUB", "bc1qfakedest")
 
     SimpleDateTimeField.replace(
         name="LAST_SUCCESSFUL_LN_CASHOUT_PAYMENT",
@@ -320,7 +320,7 @@ def test_do_cashouts_prefer_onchain_skips_ln_attempt(monkeypatch, event_loop):
     monkeypatch.setattr(liquidityhelper, "ENABLE_CASHOUT_ONCHAIN", True)
     monkeypatch.setattr(liquidityhelper, "PREFER_CASHOUT_ONCHAIN", True)
     monkeypatch.setattr(liquidityhelper, "CASHOUT_SWITCH_TO_ONCHAIN_AFTER_X_DAYS", 7)
-    monkeypatch.setattr(liquidityhelper, "CASHOUT_ONCHAIN", "bc1qfakedest")
+    monkeypatch.setattr(liquidityhelper, "CASHOUT_ONCHAIN_XPUB", "bc1qfakedest")
 
     # Record a very-recent successful LN cashout — under the prior
     # try-LN-first model this would route to LN. PREFER_CASHOUT_ONCHAIN
@@ -351,7 +351,7 @@ def test_do_cashouts_runs_onchain_even_when_no_ln_balance(monkeypatch, event_loo
     monkeypatch.setattr(liquidityhelper, "ENABLE_CASHOUT_ONCHAIN", True)
     monkeypatch.setattr(liquidityhelper, "PREFER_CASHOUT_ONCHAIN", False)
     monkeypatch.setattr(liquidityhelper, "CASHOUT_SWITCH_TO_ONCHAIN_AFTER_X_DAYS", 7)
-    monkeypatch.setattr(liquidityhelper, "CASHOUT_ONCHAIN", "bc1qfakedest")
+    monkeypatch.setattr(liquidityhelper, "CASHOUT_ONCHAIN_XPUB", "bc1qfakedest")
 
     # FakeBitcartAPI with a wallet but NO channels.
     from tests._fakes import FakeBitcartAPI
@@ -373,7 +373,7 @@ def test_do_cashouts_onchain_leg_pins_when_ln_succeeds(monkeypatch, event_loop):
     monkeypatch.setattr(liquidityhelper, "ENABLE_CASHOUT_ONCHAIN", True)
     monkeypatch.setattr(liquidityhelper, "PREFER_CASHOUT_ONCHAIN", False)
     monkeypatch.setattr(liquidityhelper, "CASHOUT_SWITCH_TO_ONCHAIN_AFTER_X_DAYS", 7)
-    monkeypatch.setattr(liquidityhelper, "CASHOUT_ONCHAIN", "bc1qfakedest")
+    monkeypatch.setattr(liquidityhelper, "CASHOUT_ONCHAIN_XPUB", "bc1qfakedest")
 
     called = _record_called_paths(monkeypatch)
     api = _make_api_with_ln_wallet()
@@ -426,7 +426,7 @@ def test_ln_cashout_no_holdback_when_onchain_healthy(monkeypatch, event_loop):
     monkeypatch.setattr(liquidityhelper, "PREFER_CASHOUT_ONCHAIN", False)
     monkeypatch.setattr(liquidityhelper, "MIN_RESERVE_ONCHAIN", 10_000)
     monkeypatch.setattr(liquidityhelper, "LSP_RESERVE_CAP_SAT", 50_000)
-    monkeypatch.setattr(liquidityhelper, "CASHOUT_ONCHAIN", "bc1qfakedest")
+    monkeypatch.setattr(liquidityhelper, "CASHOUT_ONCHAIN_XPUB", "bc1qfakedest")
 
     # Wallet has plenty on-chain.
     from tests._fakes import FakeBitcartAPI
@@ -452,7 +452,7 @@ def test_ln_cashout_holds_back_for_lsp_shortfall(monkeypatch, event_loop):
     monkeypatch.setattr(liquidityhelper, "PREFER_CASHOUT_ONCHAIN", False)
     monkeypatch.setattr(liquidityhelper, "MIN_RESERVE_ONCHAIN", 10_000)
     monkeypatch.setattr(liquidityhelper, "LSP_RESERVE_CAP_SAT", 50_000)
-    monkeypatch.setattr(liquidityhelper, "CASHOUT_ONCHAIN", "bc1qfakedest")
+    monkeypatch.setattr(liquidityhelper, "CASHOUT_ONCHAIN_XPUB", "bc1qfakedest")
 
     # On-chain has only 2,000 sat. Reserve floor is 10,000. Shortfall = 8,000.
     from tests._fakes import FakeBitcartAPI
@@ -480,7 +480,7 @@ def test_ln_cashout_holdback_respects_lsp_price_floor(monkeypatch, event_loop):
     monkeypatch.setattr(liquidityhelper, "MIN_RESERVE_ONCHAIN", 10_000)
     monkeypatch.setattr(liquidityhelper, "LSP_RESERVE_CAP_SAT", 50_000)
     monkeypatch.setattr(liquidityhelper, "LSP_MAX_FEE_PERCENT", 1.0)   # no per-quote cap
-    monkeypatch.setattr(liquidityhelper, "CASHOUT_ONCHAIN", "bc1qfakedest")
+    monkeypatch.setattr(liquidityhelper, "CASHOUT_ONCHAIN_XPUB", "bc1qfakedest")
 
     # Record an LSP quote at 30k sat → reserve floor becomes 30k.
     LspPriceQuote.create(
@@ -514,7 +514,7 @@ def test_ln_cashout_holdback_clamps_when_shortfall_exceeds_balance(monkeypatch, 
     monkeypatch.setattr(liquidityhelper, "PREFER_CASHOUT_ONCHAIN", False)
     monkeypatch.setattr(liquidityhelper, "MIN_RESERVE_ONCHAIN", 50_000)
     monkeypatch.setattr(liquidityhelper, "LSP_RESERVE_CAP_SAT", 50_000)
-    monkeypatch.setattr(liquidityhelper, "CASHOUT_ONCHAIN", "bc1qfakedest")
+    monkeypatch.setattr(liquidityhelper, "CASHOUT_ONCHAIN_XPUB", "bc1qfakedest")
 
     # On-chain has 0. Shortfall = 50,000. LN local = 30,000. So all LN
     # held back, available_ln becomes 0, LN attempt skipped.
@@ -545,7 +545,7 @@ def test_ln_cashout_force_amount_bypasses_holdback(monkeypatch, event_loop):
     monkeypatch.setattr(liquidityhelper, "MIN_RESERVE_ONCHAIN", 50_000)
     monkeypatch.setattr(liquidityhelper, "LSP_RESERVE_CAP_SAT", 50_000)
     monkeypatch.setattr(liquidityhelper, "FORCE_CASHOUT_AMOUNT_LN", 250_000)
-    monkeypatch.setattr(liquidityhelper, "CASHOUT_ONCHAIN", "bc1qfakedest")
+    monkeypatch.setattr(liquidityhelper, "CASHOUT_ONCHAIN_XPUB", "bc1qfakedest")
 
     # On-chain has 0, would normally hold back 50k. Force overrides.
     from tests._fakes import FakeBitcartAPI
@@ -566,7 +566,7 @@ def test_ln_cashout_force_amount_bypasses_holdback(monkeypatch, event_loop):
 # Stranded-LN-funds warning
 # ---------------------------------------------------------------------------
 # When LN cashouts have been failing for >X days AND the automatic drain
-# pathway is not configured (LOOP_OUT_ENABLED=False or CASHOUT_ONCHAIN
+# pathway is not configured (LOOP_OUT_ENABLED=False or CASHOUT_ONCHAIN_XPUB
 # unset), the script can't recover the funds itself. It must surface
 # this loudly so the operator sees it — without spamming every tick.
 #
@@ -628,7 +628,7 @@ def test_stranded_warning_fires_when_loop_off_and_ln_stale(monkeypatch, event_lo
     decisions.log naming the wallet and the recovery steps."""
     _stranded_warning_baseline(monkeypatch)
     monkeypatch.setattr(liquidityhelper, "LOOP_OUT_ENABLED", False)
-    monkeypatch.setattr(liquidityhelper, "CASHOUT_ONCHAIN", "bc1qfakedest")
+    monkeypatch.setattr(liquidityhelper, "CASHOUT_ONCHAIN_XPUB", "bc1qfakedest")
     _set_stale_ln(days_ago=30)
 
     api = _make_api_with_ln_wallet()
@@ -661,7 +661,7 @@ def test_stranded_warning_dedupes_across_ticks(monkeypatch, event_loop, caplog):
     fills with duplicates within hours."""
     _stranded_warning_baseline(monkeypatch)
     monkeypatch.setattr(liquidityhelper, "LOOP_OUT_ENABLED", False)
-    monkeypatch.setattr(liquidityhelper, "CASHOUT_ONCHAIN", "bc1qfakedest")
+    monkeypatch.setattr(liquidityhelper, "CASHOUT_ONCHAIN_XPUB", "bc1qfakedest")
     _set_stale_ln(days_ago=30)
 
     api = _make_api_with_ln_wallet()
@@ -686,7 +686,7 @@ def test_stranded_warning_clears_when_loop_enabled(monkeypatch, event_loop, capl
     becomes viable; the warning should clear with an INFO transition
     on the next tick. Pins the "auto-clear on recovery" property."""
     _stranded_warning_baseline(monkeypatch)
-    monkeypatch.setattr(liquidityhelper, "CASHOUT_ONCHAIN", "bc1qfakedest")
+    monkeypatch.setattr(liquidityhelper, "CASHOUT_ONCHAIN_XPUB", "bc1qfakedest")
     _set_stale_ln(days_ago=30)
     api = _make_api_with_ln_wallet()
 
@@ -713,7 +713,7 @@ def test_stranded_warning_clears_when_ln_recovers(monkeypatch, event_loop, caplo
     aren't stuck — the warning should clear via the LN-success branch."""
     _stranded_warning_baseline(monkeypatch)
     monkeypatch.setattr(liquidityhelper, "LOOP_OUT_ENABLED", False)
-    monkeypatch.setattr(liquidityhelper, "CASHOUT_ONCHAIN", "bc1qfakedest")
+    monkeypatch.setattr(liquidityhelper, "CASHOUT_ONCHAIN_XPUB", "bc1qfakedest")
     _set_stale_ln(days_ago=30)
     api = _make_api_with_ln_wallet()
 
@@ -745,7 +745,7 @@ def test_stranded_warning_not_fired_when_ln_not_yet_stale(monkeypatch, event_loo
     hiccups."""
     _stranded_warning_baseline(monkeypatch)
     monkeypatch.setattr(liquidityhelper, "LOOP_OUT_ENABLED", False)
-    monkeypatch.setattr(liquidityhelper, "CASHOUT_ONCHAIN", "bc1qfakedest")
+    monkeypatch.setattr(liquidityhelper, "CASHOUT_ONCHAIN_XPUB", "bc1qfakedest")
     _set_stale_ln(days_ago=1)   # 1 day < threshold of 7
 
     api = _make_api_with_ln_wallet()
@@ -766,13 +766,13 @@ def test_stranded_warning_not_fired_when_ln_not_yet_stale(monkeypatch, event_loo
 
 
 def test_stranded_warning_not_fired_when_drain_configured(monkeypatch, event_loop, caplog):
-    """LOOP_OUT_ENABLED=True AND CASHOUT_ONCHAIN set means the script's
+    """LOOP_OUT_ENABLED=True AND CASHOUT_ONCHAIN_XPUB set means the script's
     automatic recovery is available — funds will drain on their own.
     No stranded warning. Pins that the warning fires only when
     *manual* operator intervention is required."""
     _stranded_warning_baseline(monkeypatch)
     monkeypatch.setattr(liquidityhelper, "LOOP_OUT_ENABLED", True)
-    monkeypatch.setattr(liquidityhelper, "CASHOUT_ONCHAIN", "bc1qfakedest")
+    monkeypatch.setattr(liquidityhelper, "CASHOUT_ONCHAIN_XPUB", "bc1qfakedest")
     _set_stale_ln(days_ago=30)
 
     api = _make_api_with_ln_wallet()

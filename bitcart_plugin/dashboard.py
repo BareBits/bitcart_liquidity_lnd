@@ -930,44 +930,7 @@ async def _check_lnd_ready(api: Any) -> Tuple[bool, List[str]]:
     return (len(not_ready) == 0, not_ready)
 
 
-async def _detect_bitcoin_network(api: Any) -> str:
-    """Best-effort detection of the Bitcoin network the liquidityhelper
-    wallets are on. Walks wallets in get_wallets order, returns the
-    first network found from a btclnd wallet via api.get_lnd_info; for
-    Electrum-only deployments falls back to "". Empty string signals
-    "unknown" to the UI, which then renders txids/addresses as plain
-    text without a mempool.space link.
-
-    Normalizes 'testnet3' → 'testnet' to match the LSP-network
-    convention; preserves 'testnet4', 'signet', 'regtest', 'mainnet'
-    as-is so the UI can pick the right mempool subdomain.
-    """
-    try:
-        wallets = await api.get_wallets() or []
-    except Exception as e:
-        logger.warning(f"_detect_bitcoin_network: get_wallets failed: {e} {traceback.format_exc()}")
-        return ""
-    for w in wallets:
-        if w.get("name") != "liquidityhelper":
-            continue
-        if w.get("currency") != "btclnd":
-            continue
-        try:
-            info = await api.get_lnd_info(w["id"])
-        except Exception as e:
-            logger.warning(
-                f"_detect_bitcoin_network: get_lnd_info failed for "
-                f"wallet {w.get('id')}: {e} {traceback.format_exc()}"
-            )
-            continue
-        if not info:
-            continue
-        raw = (info.get("network") or "").lower()
-        if raw == "testnet3":
-            return "testnet"
-        if raw in ("mainnet", "testnet", "testnet4", "signet", "regtest"):
-            return raw
-    return ""
+from liquidityhelper import _detect_bitcoin_network  # noqa: E402  (re-exported)
 
 
 def _liquidity_mode_label() -> str:

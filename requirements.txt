@@ -8,3 +8,5 @@ selenium
 grpcio>=1.78.0
 protobuf
 aiosmtplib
+bip-utils>=2.9
+base58>=2.1

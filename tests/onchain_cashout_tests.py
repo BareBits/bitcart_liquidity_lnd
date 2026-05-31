@@ -72,7 +72,7 @@ def _set_global(monkeypatch, **kw):
         "ENABLE_CASHOUT_ONCHAIN": True,
         "PREFER_CASHOUT_ONCHAIN": False,
         "CASHOUT_SWITCH_TO_ONCHAIN_AFTER_X_DAYS": None,
-        "CASHOUT_ONCHAIN": "bc1qfakedest",
+        "CASHOUT_ONCHAIN_XPUB": "bc1qfakedest",
         "MIN_ONCHAIN_CASHOUT": 25_000,
         "MIN_RESERVE_ONCHAIN": 10_000,
         "CHANNEL_ONCHAIN_BUFFER": 500,
@@ -455,7 +455,7 @@ def test_onchain_cashout_via_lnd_send_coins(lnd_pair, event_loop, monkeypatch):
 
     dest_addr = event_loop.run_until_complete(lnd_pair.b.new_address())
     _set_global(monkeypatch,
-                CASHOUT_ONCHAIN=dest_addr,
+                CASHOUT_ONCHAIN_XPUB=dest_addr,
                 MIN_ONCHAIN_CASHOUT=10_000)
 
     # Pre-populate _LND_CONNECTIONS so electrum_pay_onchain doesn't try
@@ -529,7 +529,7 @@ def test_onchain_cashout_via_electrum_payto(lnd_electrum_pair, event_loop, monke
     # back to it (round-trip is fine for verifying the dispatch worked).
     dest_addr = lnd_electrum_pair.electrum.getunusedaddress()
     _set_global(monkeypatch,
-                CASHOUT_ONCHAIN=dest_addr,
+                CASHOUT_ONCHAIN_XPUB=dest_addr,
                 MIN_ONCHAIN_CASHOUT=10_000)
 
     wallet = {
@@ -722,12 +722,36 @@ def test_drain_returns_false_when_provider_rejects(monkeypatch, event_loop):
 
 def test_do_cashouts_fires_drain_when_loop_out_enabled(monkeypatch, event_loop):
     """LOOP_OUT_ENABLED=True + PREFER_CASHOUT_ONCHAIN=True + LND wallet
-    with drainable excess -> drain_ln_to_onchain gets called."""
+    with drainable excess -> drain_ln_to_onchain gets called.
+
+    Post-xpub-migration: the drain helper derives the destination via
+    address_derivation, so the asserted dest_addr is a derived
+    address (bc1q...) rather than a fixed string. We mock
+    _detect_bitcoin_network to return mainnet so the derivation lands
+    on the expected HRP."""
+    MAINNET_ZPUB = (
+        "zpub6mg9NbdenqrqfD2BbNqa4EdKS8z2yEBxH2PC4NXmXwnTDfukw3w7JLVMeb"
+        "81xc9i1N8b7ReB9ia4wLoUyLVrVxaPQbJidU8Yn6Gjd95kQmA"
+    )
     _set_global(monkeypatch,
                 PREFER_CASHOUT_ONCHAIN=True,
                 LOOP_OUT_ENABLED=True,
                 LN_DRAIN_MIN_SWAP_SAT=500_000,
-                MIN_INBOUND_LIQUIDITY_PER_CHANNEL=50_000)
+                MIN_INBOUND_LIQUIDITY_PER_CHANNEL=50_000,
+                CASHOUT_ONCHAIN_XPUB=MAINNET_ZPUB)
+
+    async def _fake_detect(_api):
+        return "mainnet"
+    monkeypatch.setattr(liquidityhelper, "_detect_bitcoin_network", _fake_detect)
+
+    # Mock the address-derivation layer so the test doesn't depend on
+    # the DerivedAddressIndex sqlite state.
+    monkeypatch.setattr(
+        liquidityhelper.address_derivation,
+        "derive_next_address",
+        lambda xpub, purpose, network: "bc1qderiveddest",
+    )
+
     api = FakeBitcartAPI()
     api.add_wallet("w1", currency="btclnd", balance=0.001)
     api.add_store("s1", wallets=["w1"])
@@ -741,7 +765,7 @@ def test_do_cashouts_fires_drain_when_loop_out_enabled(monkeypatch, event_loop):
 
     event_loop.run_until_complete(liquidityhelper.do_cashouts(api))
     assert len(drain_calls) == 1
-    assert drain_calls[0]["dest_addr"] == "bc1qfakedest"
+    assert drain_calls[0]["dest_addr"] == "bc1qderiveddest"
 
 
 def test_do_cashouts_skips_drain_when_loop_out_disabled(monkeypatch, event_loop):
@@ -767,12 +791,12 @@ def test_do_cashouts_skips_drain_when_loop_out_disabled(monkeypatch, event_loop)
 
 
 def test_do_cashouts_skips_drain_when_no_cashout_onchain(monkeypatch, event_loop):
-    """LOOP_OUT_ENABLED=True but CASHOUT_ONCHAIN is unset -> nowhere to
+    """LOOP_OUT_ENABLED=True but CASHOUT_ONCHAIN_XPUB is unset -> nowhere to
     drain TO, so the call is skipped."""
     _set_global(monkeypatch,
                 PREFER_CASHOUT_ONCHAIN=True,
                 LOOP_OUT_ENABLED=True,
-                CASHOUT_ONCHAIN=None,
+                CASHOUT_ONCHAIN_XPUB=None,
                 MIN_INBOUND_LIQUIDITY_PER_CHANNEL=50_000)
     api = FakeBitcartAPI()
     api.add_wallet("w1", currency="btclnd", balance=0.001)
