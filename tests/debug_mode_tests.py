@@ -56,7 +56,13 @@ def _isolate_debug_state(monkeypatch):
 def test_debug_mode_off_preserves_continuous_loop(monkeypatch, event_loop):
     """Default behavior: DEBUG_MODE=False → loop cycles freely. Pin
     against a regression where the debug gate accidentally fires even
-    when it shouldn't."""
+    when it shouldn't.
+
+    Note: LIQUIDITY_DISABLED defaults to True on a fresh install (so
+    operator funds aren't spent before the operator opts in via the
+    dashboard). Tests covering DEBUG_MODE behavior have to disable
+    that gate explicitly so they exercise the DEBUG_MODE branches and
+    not the disabled-mode short-circuit."""
     ticks = {"n": 0}
     stop = asyncio.Event()
 
@@ -66,6 +72,7 @@ def test_debug_mode_off_preserves_continuous_loop(monkeypatch, event_loop):
             stop.set()
 
     monkeypatch.setattr(liquidityhelper, "main", fake_main)
+    monkeypatch.setattr(liquidityhelper, "LIQUIDITY_DISABLED", False)
 
     event_loop.run_until_complete(asyncio.wait_for(
         liquidityhelper.run_tick_loop(stop_event=stop), timeout=2,
@@ -103,6 +110,7 @@ def test_debug_mode_one_trigger_fires_exactly_one_tick(monkeypatch, event_loop):
 
     monkeypatch.setattr(liquidityhelper, "main", fake_main)
     monkeypatch.setattr(liquidityhelper, "DEBUG_MODE", True)
+    monkeypatch.setattr(liquidityhelper, "LIQUIDITY_DISABLED", False)
 
     async def driver():
         # Spawn the loop, fire one trigger, then assert.
@@ -135,6 +143,7 @@ def test_debug_mode_two_triggers_two_ticks(monkeypatch, event_loop):
 
     monkeypatch.setattr(liquidityhelper, "main", fake_main)
     monkeypatch.setattr(liquidityhelper, "DEBUG_MODE", True)
+    monkeypatch.setattr(liquidityhelper, "LIQUIDITY_DISABLED", False)
 
     async def driver():
         loop_task = asyncio.create_task(liquidityhelper.run_tick_loop())
@@ -173,6 +182,7 @@ def test_toggling_debug_mode_off_unblocks_loop(monkeypatch, event_loop):
 
     monkeypatch.setattr(liquidityhelper, "main", fake_main)
     monkeypatch.setattr(liquidityhelper, "DEBUG_MODE", True)
+    monkeypatch.setattr(liquidityhelper, "LIQUIDITY_DISABLED", False)
 
     async def driver():
         loop_task = asyncio.create_task(

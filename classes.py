@@ -89,11 +89,22 @@ class StoreStats:
     revenue_eligible_for_fee:int # total revenue eligible for fee
     # note these ineligible revenue sections stack. An invoice may be ineligible for multiple reasons!
     ineligible_revenue_because_not_liquidityhelper_wallet_in_sats: int
-    ineligible_revenue_because_not_ln_transaction_in_sats: int
     ineligible_revenue_because_of_promo_in_sats: int
     ineligible_revenue_because_of_topups_in_sats: int
     ineligible_revenue_because_of_bb_topups_in_sats: int
-    ln_network_fees_paid_for_bb_topup_returns_in_sats: int # currently always zero; bb-topup returns route through misc_ln_network_fees_in_sats
+    # BB-topup-return bookkeeping. The principal RECEIVED is tracked
+    # by `ineligible_revenue_because_of_bb_topups_in_sats` above —
+    # that field already sums the actual on-chain sats credited from
+    # each paid TOPUP_BAREBITS invoice (per-payment `amount`, not
+    # invoice `price`, so overpayment is captured correctly).
+    # `total_bb_topup_principal_returned_in_sats` is the sum of sats
+    # SENT back to LN_FEE_DEST under BB_TOPUP_RETURN_REASON. The
+    # difference is the still-owed pool — see calc_bb_topup_pool_owed().
+    # The LN network fee for sending the return counts against the
+    # dev's 2% cap (same policy as dev-fee delivery). On-chain is
+    # reserved for symmetry but never populated — return is LN-only.
+    total_bb_topup_principal_returned_in_sats: int
+    ln_network_fees_paid_for_bb_topup_returns_in_sats: int
     onchain_network_fees_paid_for_bb_topup_returns_in_sats: int
     ln_network_fees_paid_for_fee_payments_in_sats:int
     onchain_network_fees_paid_for_fee_payments_in_sats: int
@@ -187,6 +198,30 @@ class StoreStats:
         return base_fee
     def calc_total_eligible_revenue_in_sats(self)->int:
         return self.revenue_eligible_for_fee
+
+    def calc_bb_topup_pool_owed(self) -> int:
+        """Sats still owed back to BareBits across all unreturned topups.
+
+        Pool model: received − returned. Channel-open / LSP costs do
+        NOT debit the pool — BareBits gets the full principal back over
+        time as the wallet accumulates LN outbound, regardless of what
+        the liquidity acquisition cost in the meantime (those costs
+        continue to count against the operator's 2% dev-fee cap via
+        the channel-open / LSP-order buckets).
+
+        Received side uses `ineligible_revenue_because_of_bb_topups_
+        in_sats` — set per-payment from actual sats credited, so
+        overpayment is captured. Returned side is the sum of outgoing
+        LN payments labeled BB_TOPUP_RETURN_REASON.
+
+        Clamped at zero so an over-return (shouldn't happen in normal
+        operation) doesn't surface as a negative debt.
+        """
+        return max(
+            0,
+            self.ineligible_revenue_because_of_bb_topups_in_sats
+            - self.total_bb_topup_principal_returned_in_sats,
+        )
 
     def calc_remaining_referral_fee_due_in_sats(self, referral_fee_amount: float) -> int:
         """Amount of referral fee still owed to REFERRAL_FEE_DEST.

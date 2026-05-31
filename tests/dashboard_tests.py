@@ -655,12 +655,27 @@ def test_liquidity_stats_totals_across_multiple_wallets(monkeypatch):
     assert stats.total_channel_count == 2
 
 
-def test_liquidity_stats_mode_label_lsp_default(monkeypatch):
-    """Default config (AUTOMATIC_CHANNEL_CREATION_ENABLED=False) →
-    'LSP-managed liquidity'. Operators delegate channel acquisition
+def test_liquidity_stats_mode_label_disabled_default(monkeypatch):
+    """Default config (LIQUIDITY_DISABLED=True) →
+    'Disabled (tick loop paused)'. Fresh installs start paused until
+    the operator explicitly opts into LSP or Automatic mode via the
+    dashboard Settings dropdown."""
+    import importlib, config
+    importlib.reload(config)
+
+    api = FakeBitcartAPI()
+    _setup_engine_dispatch(monkeypatch, api)
+    payload = _run(dashboard_mod.compute_dashboard(api, "all"))
+    assert payload.liquidity_stats.mode == "Disabled (tick loop paused)"
+
+
+def test_liquidity_stats_mode_label_lsp(monkeypatch):
+    """LIQUIDITY_DISABLED=False + AUTOMATIC_CHANNEL_CREATION_ENABLED=False
+    → 'LSP-managed liquidity'. Operators delegate channel acquisition
     to an LSP via pick_best_lsp_for_inbound."""
     import importlib, config
     importlib.reload(config)
+    monkeypatch.setattr(config, "LIQUIDITY_DISABLED", False, raising=False)
     monkeypatch.setattr(config, "AUTOMATIC_CHANNEL_CREATION_ENABLED", False, raising=False)
 
     api = FakeBitcartAPI()
@@ -670,11 +685,12 @@ def test_liquidity_stats_mode_label_lsp_default(monkeypatch):
 
 
 def test_liquidity_stats_mode_label_automatic(monkeypatch):
-    """AUTOMATIC_CHANNEL_CREATION_ENABLED=True → 'Automatic channel
-    management' — the engine opens channels itself via
-    pick_best_channel_partners + move_onchain_to_ln."""
+    """LIQUIDITY_DISABLED=False + AUTOMATIC_CHANNEL_CREATION_ENABLED=True
+    → 'Automatic channel management' — the engine opens channels
+    itself via pick_best_channel_partners + move_onchain_to_ln."""
     import importlib, config
     importlib.reload(config)
+    monkeypatch.setattr(config, "LIQUIDITY_DISABLED", False, raising=False)
     monkeypatch.setattr(config, "AUTOMATIC_CHANNEL_CREATION_ENABLED", True, raising=False)
 
     api = FakeBitcartAPI()
