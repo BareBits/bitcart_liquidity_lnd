@@ -109,8 +109,9 @@ CHANNEL_ONCHAIN_BUFFER: int = 500
 ENABLE_CASHOUT_LN: bool = True
 
 # Enable on-chain cashouts. When True, on-chain revenue above the
-# reserve floor is swept each tick to CASHOUT_ONCHAIN. Off by default
-# because most operators prefer to keep funds flowing through LN.
+# reserve floor is swept each tick to a freshly-derived address from
+# CASHOUT_ONCHAIN_XPUB. Off by default because most operators prefer
+# to keep funds flowing through LN.
 ENABLE_CASHOUT_ONCHAIN: bool = False
 
 # Prefer on-chain over LN even when LN is healthy. Forces every cashout
@@ -123,8 +124,9 @@ ENABLE_CASHOUT_ONCHAIN: bool = False
 PREFER_CASHOUT_ONCHAIN: bool = False
 
 # Force all cashouts onto the Lightning rail. When True, on-chain revenue
-# that would normally be swept to CASHOUT_ONCHAIN is instead used to
-# open a NEW Lightning channel to a node we don't already have a channel
+# that would normally be swept to a CASHOUT_ONCHAIN_XPUB-derived address
+# is instead used to open a NEW Lightning channel to a node we don't
+# already have a channel
 # with (picked by the same gossip-derived ranking the rest of the script
 # uses). The LN-balance leg continues to sweep to
 # CASHOUT_LIGHTNING_ADDRESS unchanged.
@@ -241,11 +243,29 @@ MIN_LN_CASHOUT_IN_SATS: int = 150
 # enabling LN cashouts.
 CASHOUT_LIGHTNING_ADDRESS: Optional[str] = None
 
-# On-chain Bitcoin address for cashouts and (if LOOP_OUT_ENABLED) for
-# loop-out drain output. Bech32 / P2TR / P2WPKH all accepted. Required
-# when ENABLE_CASHOUT_ONCHAIN=True OR PREFER_CASHOUT_ONCHAIN=True;
-# otherwise optional.
-CASHOUT_ONCHAIN: Optional[str] = None
+# Account-level xpub for on-chain cashouts and (if LOOP_OUT_ENABLED)
+# the loop-out drain output. A fresh receive-chain address
+# (<xpub>/0/<next_index>) is derived per send and the counter
+# persisted, so each cashout lands at a different address — improves
+# privacy (the recipient's total on-chain receipts aren't visible to
+# blockchain explorers as a single accumulating address) and aligns
+# with standard Bitcoin wallet practice.
+#
+# Accepted formats: xpub/ypub/zpub on mainnet and tpub/upub/vpub on
+# any non-mainnet network (testnet3, testnet4, signet, Mutinynet,
+# regtest). Version bytes pick the address type:
+#   xpub/tpub  -> legacy P2PKH (1.../m.../n...)
+#   ypub/upub  -> wrapped segwit P2SH-P2WPKH (3.../2...)
+#   zpub/vpub  -> native segwit P2WPKH (bc1q.../tb1q.../bcrt1q...)
+#
+# Both depth-1 (Electrum native-segwit default) and depth-3 (BIP-44/
+# 49/84 strict-standard) extended pubkeys are supported.
+#
+# Required when ENABLE_CASHOUT_ONCHAIN=True OR PREFER_CASHOUT_ONCHAIN
+# =True; otherwise optional. Replaces the legacy CASHOUT_ONCHAIN
+# fixed-address setting — operators upgrading from earlier versions
+# must export their wallet's xpub and configure it here.
+CASHOUT_ONCHAIN_XPUB: Optional[str] = None
 
 # Smallest on-chain payment the script will broadcast, in sats. Gates
 # the on-chain cashout sweep AND the on-chain dev-fee + referral-fee
@@ -290,11 +310,44 @@ LN_FEE_DEST: str = "fees@getbarebits.com"
 # Address. Plain ASCII recommended. Typical: "default".
 BB_STOREID: str = "default"
 
-# On-chain destination for the developer fee. Used when LN fee
-# payments have been failing for FEE_SWITCH_TO_ONCHAIN_AFTER_X_DAYS or
-# when FORCE_FEE_ONCHAIN_INSTEAD_OF_LN is True. Default points at the
-# BareBits on-chain fee address.
-ONCHAIN_FEE_DEST: str = "bc1q586um24k7zr6swxqny5qqgqn8xt43pk4xeeg9g"
+# Account-level xpubs for the on-chain developer-fee destination,
+# one per network. The engine picks the right one based on the
+# detected deployment network (mainnet vs testnet/signet/regtest)
+# and derives a fresh receive-chain address per send. Same
+# xpub/ypub/zpub or tpub/upub/vpub format support as
+# CASHOUT_ONCHAIN_XPUB.
+#
+# Used when LN fee payments have been failing for
+# FEE_SWITCH_TO_ONCHAIN_AFTER_X_DAYS or when
+# FORCE_FEE_ONCHAIN_INSTEAD_OF_LN is True. Replaces the legacy
+# ONCHAIN_FEE_DEST fixed-address setting (which baked
+# bc1q586um24k7zr6swxqny5qqgqn8xt43pk4xeeg9g as a single
+# always-reused address — that address remains the first
+# derived address (m/0/0) from the mainnet xpub below, so payments
+# are continuous, just no longer 100% address-reused).
+#
+# The default xpubs point at BareBits-controlled wallets;
+# don't change unless you've cleared an alternative arrangement.
+# Operators worldwide share these xpubs and each install increments
+# its own local DerivedAddressIndex counter, so addresses across
+# installs CAN collide — still strictly better than the
+# single-address-forever status quo. Per-install offset assignment
+# is a future refinement.
+# BareBits fee xpub (mainnet `zpub`). Selected when the deployment
+# network is mainnet — produces `bc1q...` addresses.
+BAREBITS_FEE_XPUB_MAINNET: str = (
+    "zpub6mg9NbdenqrqfD2BbNqa4EdKS8z2yEBxH2PC4NXmXwnTDfukw3w7JLVMeb"
+    "81xc9i1N8b7ReB9ia4wLoUyLVrVxaPQbJidU8Yn6Gjd95kQmA"
+)
+
+# BareBits fee xpub (testnet `vpub`). Selected for every non-mainnet
+# deployment — testnet3, testnet4, signet, Mutinynet, regtest. Produces
+# `tb1q...` addresses on testnet/signet/Mutinynet and `bcrt1q...` on
+# regtest (the engine swaps the bech32 HRP per-network).
+BAREBITS_FEE_XPUB_TESTNET: str = (
+    "vpub5W139rovao2tiN81BHSVxT9ZMdSaUqQ2UaZK6DjBjS6jWYjHFoJNSRJW2"
+    "BtaFvt2j74jzsowhdjjYCRD7hc9MZra4WVA3awF4JxF5AAJ8Fn"
+)
 
 # Minimum sats accumulated before a fee payment is sent. Smaller fee
 # payments are deferred until the accumulator crosses this threshold —
@@ -357,10 +410,14 @@ REFERRAL_FEE_AMOUNT: float = 0.0
 # logged and skipped.
 REFERRAL_FEE_DEST: Optional[str] = None
 
-# On-chain Bitcoin address for the referral. Used when LN referrals
-# have been failing for REFERRAL_SWITCH_TO_ONCHAIN_AFTER_X_DAYS or
-# when FORCE_REFERRAL_ONCHAIN_INSTEAD_OF_LN is True.
-REFERRAL_ONCHAIN_DEST: Optional[str] = None
+# Account-level xpub for the on-chain referral payment. Used when
+# LN referrals have been failing for
+# REFERRAL_SWITCH_TO_ONCHAIN_AFTER_X_DAYS or when
+# FORCE_REFERRAL_ONCHAIN_INSTEAD_OF_LN is True. Same xpub/ypub/zpub
+# or tpub/upub/vpub format support as CASHOUT_ONCHAIN_XPUB. A fresh
+# receive-chain address is derived per send. Replaces the legacy
+# REFERRAL_ONCHAIN_DEST fixed-address setting.
+REFERRAL_ONCHAIN_DEST_XPUB: Optional[str] = None
 
 # Transaction label used to identify referral payments in the database.
 # Leave at the default unless you have a specific reason to change it.
@@ -525,7 +582,7 @@ AUTOMATIC_RESERVE_SAFETY_SAT: int = 1_000
 LND_ONCHAIN_TARGET_CONF: int = 6
 
 # Block-confirmation target for on-chain cashout payments
-# (CASHOUT_ONCHAIN sends labeled `lnhelper_cashout`). Set high
+# (CASHOUT_ONCHAIN_XPUB-derived sends labeled `lnhelper_cashout`). Set high
 # because cashouts are not customer-facing urgent — the operator's
 # revenue is already sitting in the wallet and the cashout just
 # moves it to their preferred destination. A 144-block (~24-hour)

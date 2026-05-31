@@ -30,6 +30,7 @@ from typing import Dict, Any, Optional
 
 
 import common_functions
+import address_derivation
 import config
 from config import AUTH_TOKEN
 import node_database
@@ -603,6 +604,74 @@ async def run_every_x_hours(*args, my_func: Callable, hours: int, **kwargs):
 
 async def run_every_x_days(*args, my_func: Callable, days: int, **kwargs):
     return await run_every_x_seconds(seconds=days * 24 * 60 * 60, my_func=my_func, *args, **kwargs)
+
+
+async def _detect_bitcoin_network(api: "BitcartAPI") -> str:
+    """Best-effort detection of the Bitcoin network the liquidityhelper
+    wallets are on. Walks wallets in get_wallets order, returns the
+    first network found from a btclnd wallet via api.get_lnd_info; for
+    Electrum-only deployments falls back to "". Empty string signals
+    "unknown".
+
+    Normalizes 'testnet3' → 'testnet' to match the LSP-network
+    convention; preserves 'testnet4', 'signet', 'regtest', 'mainnet'
+    as-is so the dashboard can pick the right mempool subdomain and
+    the address-derivation layer can pick the right HRP via
+    `_address_derivation_network()`.
+    """
+    try:
+        wallets = await api.get_wallets() or []
+    except Exception as e:
+        logger.warning(f"_detect_bitcoin_network: get_wallets failed: {e} {traceback.format_exc()}")
+        return ""
+    for w in wallets:
+        if w.get("name") != "liquidityhelper":
+            continue
+        if w.get("currency") != "btclnd":
+            continue
+        try:
+            info = await api.get_lnd_info(w["id"])
+        except Exception as e:
+            logger.warning(
+                f"_detect_bitcoin_network: get_lnd_info failed for "
+                f"wallet {w.get('id')}: {e} {traceback.format_exc()}"
+            )
+            continue
+        if not info:
+            continue
+        raw = (info.get("network") or "").lower()
+        if raw == "testnet3":
+            return "testnet"
+        if raw in ("mainnet", "testnet", "testnet4", "signet", "regtest"):
+            return raw
+    return ""
+
+
+def _address_derivation_network(detected: str) -> Optional[str]:
+    """Map _detect_bitcoin_network's output to the three buckets the
+    address_derivation layer understands.
+
+    The xpub at the derivation layer only cares about three address
+    families:
+      mainnet                                       → 'mainnet'
+      testnet3 / testnet4 / signet / Mutinynet      → 'testnet'
+      regtest                                       → 'regtest'
+
+    These map to {bc, tb, bcrt} HRPs respectively. Returns None when
+    the deployment network is unknown so callers can skip the
+    derivation cleanly rather than encoding to the wrong network.
+    """
+    if not detected:
+        return None
+    if detected == "mainnet":
+        return "mainnet"
+    if detected == "regtest":
+        return "regtest"
+    # testnet, testnet4, signet (Mutinynet is a signet variant) all
+    # share the testnet xpub family + `tb` HRP.
+    if detected in ("testnet", "testnet4", "signet"):
+        return "testnet"
+    return None
 
 
 async def _lnd_list_channels(api: "BitcartAPI", wallet_id: str) -> List[Dict[str, Any]]:
@@ -4153,8 +4222,12 @@ async def calculate_fees(api: BitcartAPI) -> Optional[bool]:
                     "Dev fee rail (store %s): LN failed but not yet stale — "
                     "will retry LN next tick", store_id,
                 )
-        elif ONCHAIN_FEE_DEST:
+        else:
             # No LN destination configured at all — go straight to on-chain.
+            # BareBits's onchain fee xpub is always configured by default,
+            # so the on-chain path always has a destination; _pay_dev_fee_
+            # via_onchain itself handles network detection + xpub validation
+            # and soft-fails (returns False) if either is missing.
             await _pay_dev_fee_via_onchain(
                 api, store_id, wallet_to_use, int(remaining_fees_due),
             )
@@ -4222,7 +4295,7 @@ async def calculate_fees(api: BitcartAPI) -> Optional[bool]:
                         "Referral rail (store %s): LN failed but not yet "
                         "stale — will retry LN next tick", store_id,
                     )
-            elif REFERRAL_ONCHAIN_DEST:
+            elif REFERRAL_ONCHAIN_DEST_XPUB:
                 # No LN destination -> go straight to on-chain.
                 await _pay_referral_via_onchain(
                     api, store_id, wallet_to_use, int(remaining_referral_due),
@@ -4230,7 +4303,8 @@ async def calculate_fees(api: BitcartAPI) -> Optional[bool]:
             else:
                 logger.error(
                     "REFERRAL_FEE_AMOUNT is %s but neither REFERRAL_FEE_DEST "
-                    "nor REFERRAL_ONCHAIN_DEST is set for store %s; skipping",
+                    "nor REFERRAL_ONCHAIN_DEST_XPUB is set for store %s; "
+                    "skipping",
                     REFERRAL_FEE_AMOUNT, store_id,
                 )
     return True
@@ -4418,10 +4492,36 @@ async def _maybe_pay_bb_topup_return_via_ln(
 async def _pay_dev_fee_via_onchain(
     api: BitcartAPI, store_id: str, wallet_to_use: dict, amount: int,
 ) -> bool:
-    if not ONCHAIN_FEE_DEST:
+    # Resolve the network and pick the right BareBits fee xpub. Network
+    # detection failure → soft-skip (consistent with the operator's
+    # `soft-fail per-action` migration choice). Re-derive every call so
+    # each tx goes to a fresh address.
+    detected = await _detect_bitcoin_network(api)
+    network = _address_derivation_network(detected)
+    if network is None:
         logger.error(
-            "Dev fee rail is on-chain but ONCHAIN_FEE_DEST is unset; "
-            "cannot send. Store %s", store_id,
+            "Dev fee onchain skip: could not detect deployment network "
+            "(detected=%r); cannot pick the right BareBits xpub.",
+            detected,
+        )
+        return False
+    fee_xpub = (
+        BAREBITS_FEE_XPUB_MAINNET if network == "mainnet"
+        else BAREBITS_FEE_XPUB_TESTNET
+    )
+    if not fee_xpub:
+        logger.error(
+            "Dev fee onchain skip: BAREBITS_FEE_XPUB_%s is unset. "
+            "Store %s, %d sat due.",
+            network.upper(), store_id, amount,
+        )
+        return False
+    ok_xpub, reason = address_derivation.validate_xpub(fee_xpub, network)
+    if not ok_xpub:
+        logger.error(
+            "Dev fee onchain skip: BAREBITS_FEE_XPUB invalid for "
+            "network %s: %s. Store %s, %d sat due.",
+            network, reason, store_id, amount,
         )
         return False
     # Minimum-amount gate. Sending a tiny on-chain fee where mining
@@ -4447,10 +4547,16 @@ async def _pay_dev_fee_via_onchain(
         )
         return False
     log_decision(("fee_blocked_pending", store_id), False, "")
+    # Derive the destination address. Counter advances atomically with
+    # the derivation (before broadcast) so a crash mid-broadcast leaves
+    # a skipped index — harmless, recipient's gap-limit handles it.
+    dest_address = address_derivation.derive_next_address(
+        fee_xpub, purpose="fee", network=network,
+    )
     if DRY_RUN_FUNDS:
         logger.warning(
             "DRY RUN: would have sent %d sat onchain fee to %s",
-            amount, ONCHAIN_FEE_DEST,
+            amount, dest_address,
         )
         return False
     SimpleDateTimeField.replace(
@@ -4458,7 +4564,7 @@ async def _pay_dev_fee_via_onchain(
         date=datetime.datetime.now(),
     ).execute()
     ok = await electrum_pay_onchain(
-        ONCHAIN_FEE_DEST, sats_to_btc(amount), label=FEE_PAYOUT_REASON,
+        dest_address, sats_to_btc(amount), label=FEE_PAYOUT_REASON,
         wallet=wallet_to_use, api=api,
     )
     if ok:
@@ -4466,7 +4572,7 @@ async def _pay_dev_fee_via_onchain(
             "Onchain dev-fee payment sent: %s from wallet …%s to %s",
             fmt_btc_sats(amount),
             wallet_short(wallet_to_use.get("id")),
-            ONCHAIN_FEE_DEST,
+            dest_address,
         )
         SimpleDateTimeField.replace(
             name="LAST_SUCCESSFUL_ONCHAIN_FEE_PAYMENT",
@@ -4542,10 +4648,30 @@ async def _pay_referral_via_ln(
 async def _pay_referral_via_onchain(
     api: BitcartAPI, store_id: str, wallet_to_use: dict, amount: int,
 ) -> bool:
-    if not REFERRAL_ONCHAIN_DEST:
+    if not REFERRAL_ONCHAIN_DEST_XPUB:
         logger.error(
-            "Referral rail is on-chain but REFERRAL_ONCHAIN_DEST is unset; "
-            "cannot send. Store %s, %d sat due.", store_id, amount,
+            "Referral rail is on-chain but REFERRAL_ONCHAIN_DEST_XPUB "
+            "is unset; cannot send. Store %s, %d sat due.",
+            store_id, amount,
+        )
+        return False
+    detected = await _detect_bitcoin_network(api)
+    network = _address_derivation_network(detected)
+    if network is None:
+        logger.error(
+            "Referral onchain skip: could not detect deployment network "
+            "(detected=%r). Store %s, %d sat due.",
+            detected, store_id, amount,
+        )
+        return False
+    ok_xpub, reason = address_derivation.validate_xpub(
+        REFERRAL_ONCHAIN_DEST_XPUB, network,
+    )
+    if not ok_xpub:
+        logger.error(
+            "Referral onchain skip: REFERRAL_ONCHAIN_DEST_XPUB invalid "
+            "for network %s: %s. Store %s, %d sat due.",
+            network, reason, store_id, amount,
         )
         return False
     # Minimum-amount gate. Same rationale + shared threshold as
@@ -4570,10 +4696,13 @@ async def _pay_referral_via_onchain(
         )
         return False
     log_decision(("referral_blocked_pending", store_id), False, "")
+    dest_address = address_derivation.derive_next_address(
+        REFERRAL_ONCHAIN_DEST_XPUB, purpose="referral", network=network,
+    )
     if DRY_RUN_FUNDS:
         logger.warning(
             "DRY RUN: would have sent %d sat onchain referral to %s",
-            amount, REFERRAL_ONCHAIN_DEST,
+            amount, dest_address,
         )
         return False
     SimpleDateTimeField.replace(
@@ -4581,7 +4710,7 @@ async def _pay_referral_via_onchain(
         date=datetime.datetime.now(),
     ).execute()
     ok = await electrum_pay_onchain(
-        REFERRAL_ONCHAIN_DEST, sats_to_btc(amount), label=REFERRAL_PAYOUT_REASON,
+        dest_address, sats_to_btc(amount), label=REFERRAL_PAYOUT_REASON,
         wallet=wallet_to_use, api=api,
     )
     if ok:
@@ -4589,7 +4718,7 @@ async def _pay_referral_via_onchain(
             "Onchain referral payment sent: %s from wallet …%s to %s",
             fmt_btc_sats(amount),
             wallet_short(wallet_to_use.get("id")),
-            REFERRAL_ONCHAIN_DEST,
+            dest_address,
         )
         SimpleDateTimeField.replace(
             name="LAST_SUCCESSFUL_ONCHAIN_REFERRAL_PAYMENT",
@@ -4843,13 +4972,34 @@ def should_prefer_onchain_cashout() -> bool:
 async def do_onchain_cashouts(api:BitcartAPI,
                               wallet_id: str, cashout_amount_avail_onchain: int
                               ) -> bool:
-    """Send `cashout_amount_avail_onchain` sat on-chain to CASHOUT_ONCHAIN.
-    Returns True on a successful broadcast, False otherwise (config
-    error, amount below MIN_ONCHAIN_CASHOUT, DRY_RUN_FUNDS, or broadcast
-    failure). Caller uses the return value to decide whether to mark
-    the wallet+destination as cashed-out this tick or to retry next."""
-    if not CASHOUT_ONCHAIN:
-        logger.error('In do_onchain_cashouts, no CASHOUT_ONCHAIN (address), not cashing out')
+    """Send `cashout_amount_avail_onchain` sat on-chain to a fresh
+    address derived from CASHOUT_ONCHAIN_XPUB. Returns True on a
+    successful broadcast, False otherwise (config error, amount below
+    MIN_ONCHAIN_CASHOUT, DRY_RUN_FUNDS, broadcast failure, or xpub
+    misconfiguration). Caller uses the return value to decide whether
+    to mark the wallet+destination as cashed-out this tick or to retry
+    next."""
+    if not CASHOUT_ONCHAIN_XPUB:
+        logger.error('In do_onchain_cashouts, no CASHOUT_ONCHAIN_XPUB configured, not cashing out')
+        return False
+    detected = await _detect_bitcoin_network(api)
+    network = _address_derivation_network(detected)
+    if network is None:
+        logger.error(
+            "do_onchain_cashouts: could not detect deployment network "
+            "(detected=%r); not cashing out.",
+            detected,
+        )
+        return False
+    ok_xpub, reason = address_derivation.validate_xpub(
+        CASHOUT_ONCHAIN_XPUB, network,
+    )
+    if not ok_xpub:
+        logger.error(
+            "do_onchain_cashouts: CASHOUT_ONCHAIN_XPUB invalid for "
+            "network %s: %s. Wallet %s, %d sat.",
+            network, reason, wallet_id, cashout_amount_avail_onchain,
+        )
         return False
     if FORCE_CASHOUT_AMOUNT_ONCHAIN:
         cashout_amount_avail_onchain = FORCE_CASHOUT_AMOUNT_ONCHAIN
@@ -4865,9 +5015,12 @@ async def do_onchain_cashouts(api:BitcartAPI,
             f"via onchain {cashout_amount_avail_onchain}"
         )
         return False
+    dest_address = address_derivation.derive_next_address(
+        CASHOUT_ONCHAIN_XPUB, purpose="cashout", network=network,
+    )
     logger.info(
         f"For wallet {wallet_id} Attempting to cashout via onchain "
-        f"{cashout_amount_avail_onchain}"
+        f"{cashout_amount_avail_onchain} to {dest_address}"
     )
 
     # Cashouts are not customer-facing urgent — operator's revenue is
@@ -4875,7 +5028,7 @@ async def do_onchain_cashouts(api:BitcartAPI,
     # preferred destination. Use the slow-but-cheap LND_CASHOUT_TARGET_CONF
     # (~144 blocks = ~24 hours) rather than the 6-block default.
     transaction_result = await electrum_pay_onchain(
-        CASHOUT_ONCHAIN, sats_to_btc(cashout_amount_avail_onchain),
+        dest_address, sats_to_btc(cashout_amount_avail_onchain),
         label=CASHOUT_REASON,
         wallet=full_wallet, api=api,
         target_conf=LND_CASHOUT_TARGET_CONF,
@@ -4884,7 +5037,7 @@ async def do_onchain_cashouts(api:BitcartAPI,
         log_event(
             "Onchain cashout sent: %s from wallet …%s to %s",
             fmt_btc_sats(cashout_amount_avail_onchain),
-            wallet_short(wallet_id), CASHOUT_ONCHAIN,
+            wallet_short(wallet_id), dest_address,
         )
         SimpleDateTimeField.replace(
             name="LAST_SUCCESSFUL_ONCHAIN_CASHOUT_PAYMENT",
@@ -5305,11 +5458,19 @@ async def _do_keysend_cashouts_to_own_nodes(
 async def notused_do_onchain_cashouts(
     wallet_id: str, cashout_amount_avail_onchain: int, store: dict, api: BitcartAPI
 ):
-    if not CASHOUT_ONCHAIN:
+    # Dead-code path retained for historical reference (early on-chain
+    # cashout flow that went through Bitcart's create_payout_onchain
+    # API rather than directly through electrum/lnd). Reachable from
+    # nowhere in current code. Updated mechanically to reference
+    # CASHOUT_ONCHAIN_XPUB so the file imports cleanly post-xpub
+    # migration; if this function is ever revived it should derive a
+    # fresh address through address_derivation, same as
+    # do_onchain_cashouts.
+    if not CASHOUT_ONCHAIN_XPUB:
         return
     if not ENABLE_CASHOUT_ONCHAIN:
         logger.warning(
-            f"Skipping actual onchain cashout due to ENABLE_CASHOUT_ONCHAIN. Would have sent {cashout_amount_avail_onchain} from {wallet_id} to {CASHOUT_ONCHAIN}"
+            f"Skipping actual onchain cashout due to ENABLE_CASHOUT_ONCHAIN. Would have sent {cashout_amount_avail_onchain} from {wallet_id}"
         )
         return
     if cashout_amount_avail_onchain < MIN_ONCHAIN_CASHOUT:
@@ -5330,10 +5491,10 @@ async def notused_do_onchain_cashouts(
             f"DRY RUN: Onchain cashout would be created: store {store} wallet {wallet_id} amount {cashout_amount_avail_onchain}"
         )
         return
-    # do on-chain cashout
-    cashout_result = await api.create_payout_onchain(
-        store["id"], wallet_id, cashout_amount_avail_onchain, CASHOUT_ONCHAIN
-    )
+    # do on-chain cashout — would need to derive a fresh address here
+    # if this path were ever revived; leaving stale to avoid touching
+    # dead code further.
+    cashout_result = None
     cashout_approval_result = None
     cashout_send_result = None
     logger.info(
@@ -5365,7 +5526,7 @@ async def do_cashouts(api: BitcartAPI) -> Optional[bool]:
         first tries OWN_LIGHTNING_NODES direct-channel push_sat, then
         falls back to a random-peer automatic-mode channel-open.
       - default: _attempt_onchain_cashout sweeps on-chain excess to
-        CASHOUT_ONCHAIN.
+        a freshly-derived address from CASHOUT_ONCHAIN_XPUB.
 
     Returns True on a complete tick (one or both legs ran), False on
     exception, None when all cashout paths are gated off.
@@ -5567,11 +5728,11 @@ async def do_cashouts(api: BitcartAPI) -> Optional[bool]:
                     api, wallet_id, best_wallet,
                 )
                 # The drain helper is a silent no-op when
-                # LOOP_OUT_ENABLED is off or CASHOUT_ONCHAIN is
+                # LOOP_OUT_ENABLED is off or CASHOUT_ONCHAIN_XPUB is
                 # unset. In that case the operator's external LN
                 # funds are genuinely stuck — surface this loudly
                 # exactly once per state transition.
-                drain_will_run = bool(LOOP_OUT_ENABLED and CASHOUT_ONCHAIN)
+                drain_will_run = bool(LOOP_OUT_ENABLED and CASHOUT_ONCHAIN_XPUB)
                 stranded = available_ln > 0 and not drain_will_run
                 if stranded:
                     days_stale = days_since_last_successful_ln_cashout()
@@ -5580,10 +5741,10 @@ async def do_cashouts(api: BitcartAPI) -> Optional[bool]:
                         "STRANDED LN FUNDS: wallet %s has %d sat in "
                         "external channels but LN cashouts have been "
                         "failing for %s days. Automatic recovery is "
-                        "OFF (LOOP_OUT_ENABLED=%s, CASHOUT_ONCHAIN=%s). "
+                        "OFF (LOOP_OUT_ENABLED=%s, CASHOUT_ONCHAIN_XPUB=%s). "
                         "To recover, do ONE of: "
                         "(a) set LOOP_OUT_ENABLED=True AND set "
-                        "CASHOUT_ONCHAIN to a Bitcoin address; "
+                        "CASHOUT_ONCHAIN_XPUB to an xpub; "
                         "(b) close the channel cooperatively or by "
                         "force-close; "
                         "(c) manually pay an outbound LN invoice "
@@ -5591,7 +5752,7 @@ async def do_cashouts(api: BitcartAPI) -> Optional[bool]:
                         "control.",
                         wallet_id, available_ln, days_stale,
                         "True" if LOOP_OUT_ENABLED else "False",
-                        "set" if CASHOUT_ONCHAIN else "unset",
+                        "set" if CASHOUT_ONCHAIN_XPUB else "unset",
                         level=logging.WARNING,
                     )
                 else:
@@ -5636,7 +5797,8 @@ async def do_cashouts(api: BitcartAPI) -> Optional[bool]:
         #     partners) if the direct-channel attempt fails. The
         #     cashout is delayed until safe_to_spend clears both
         #     MIN_CHANNEL_SIZE_IN_SATS and the reserve floor.
-        #   - default: sweep on-chain excess to CASHOUT_ONCHAIN.
+        #   - default: sweep on-chain excess to a freshly-derived
+        #     address from CASHOUT_ONCHAIN_XPUB.
         # The LN-leg above runs in either case so LN balance still
         # cashes out to CASHOUT_LIGHTNING_ADDRESS.
         if PREFER_LN_CASHOUT:
@@ -5651,15 +5813,36 @@ async def do_cashouts(api: BitcartAPI) -> Optional[bool]:
 async def _drain_ln_for_cashout_if_enabled(
     api: BitcartAPI, wallet_id: str, best_wallet: dict,
 ) -> None:
-    """Loop-out LN excess to CASHOUT_ONCHAIN. Idempotent within
-    drain_ln_to_onchain's own logic (it has its own threshold + cap +
-    pending-channel guard). Gated by LOOP_OUT_ENABLED and the presence
-    of CASHOUT_ONCHAIN as the swap destination."""
-    if not (LOOP_OUT_ENABLED and CASHOUT_ONCHAIN):
+    """Loop-out LN excess to a freshly-derived address from
+    CASHOUT_ONCHAIN_XPUB. Idempotent within drain_ln_to_onchain's own
+    logic (it has its own threshold + cap + pending-channel guard).
+    Gated by LOOP_OUT_ENABLED and the presence of CASHOUT_ONCHAIN_XPUB
+    as the swap destination."""
+    if not (LOOP_OUT_ENABLED and CASHOUT_ONCHAIN_XPUB):
         return
+    detected = await _detect_bitcoin_network(api)
+    network = _address_derivation_network(detected)
+    if network is None:
+        logger.warning(
+            "drain_ln_for_cashout: skipping — could not detect "
+            "deployment network (detected=%r)", detected,
+        )
+        return
+    ok_xpub, reason = address_derivation.validate_xpub(
+        CASHOUT_ONCHAIN_XPUB, network,
+    )
+    if not ok_xpub:
+        logger.warning(
+            "drain_ln_for_cashout: skipping — CASHOUT_ONCHAIN_XPUB "
+            "invalid for network %s: %s", network, reason,
+        )
+        return
+    dest_addr = address_derivation.derive_next_address(
+        CASHOUT_ONCHAIN_XPUB, purpose="cashout", network=network,
+    )
     try:
         await drain_ln_to_onchain(
-            api, wallet=best_wallet, dest_addr=CASHOUT_ONCHAIN,
+            api, wallet=best_wallet, dest_addr=dest_addr,
         )
     except Exception as e:
         logger.error(
@@ -5671,7 +5854,8 @@ async def _drain_ln_for_cashout_if_enabled(
 async def _attempt_onchain_cashout(
     api: BitcartAPI, store_id: str, wallet_id: str, best_wallet: dict,
 ) -> bool:
-    """Send the wallet's on-chain excess to CASHOUT_ONCHAIN. Fires every
+    """Send the wallet's on-chain excess to a freshly-derived address
+    from CASHOUT_ONCHAIN_XPUB. Fires every
     tick that ENABLE_CASHOUT_ONCHAIN is True AND no channel-open /
     coop-close is pending — so on-chain customer revenue doesn't pile
     up while LN cashouts are working. Returns True if a tx was
@@ -5728,7 +5912,8 @@ async def _attempt_ln_channel_open_for_cashout(
     api: BitcartAPI, store_id: str, wallet_id: str, best_wallet: dict,
 ) -> bool:
     """PREFER_LN_CASHOUT path: instead of sweeping on-chain excess to
-    CASHOUT_ONCHAIN, use it to open a Lightning channel that pushes the
+    a CASHOUT_ONCHAIN_XPUB-derived address, use it to open a Lightning
+    channel that pushes the
     cashout amount to one of our peers.
 
     Returns True if a channel-open attempt was kicked off. False (and a
@@ -8379,6 +8564,11 @@ _HEALTH_WARNING_IDS = (
     "smtp-tls-and-ssl",                       # M24
     "smtp-partial-config",                    # M25
     "ln-cashout-failing",                     # R27
+    "cashout-xpub-invalid",                   # X30
+    "referral-xpub-invalid",                  # X31
+    "referral-no-destination",                # X32
+    "barebits-fee-xpub-unset",                # X33
+    "barebits-fee-xpub-invalid",              # X34
 )
 
 _LN_CASHOUT_FAIL_DAYS = 7  # fixed per operator decision
@@ -8421,18 +8611,18 @@ def _check_cashout_config() -> List[Dict[str, str]]:
             "set a destination Lightning Address.",
             settings=["ENABLE_CASHOUT_LN", "CASHOUT_LIGHTNING_ADDRESS"],
         ))
-    if ENABLE_CASHOUT_ONCHAIN and not CASHOUT_ONCHAIN:
+    if ENABLE_CASHOUT_ONCHAIN and not CASHOUT_ONCHAIN_XPUB:
         out.append(_warn(
             "cashout-rail-enabled-no-dest-onchain", "HIGH", "cashout",
-            "On-chain cashouts enabled but no destination address",
-            "ENABLE_CASHOUT_ONCHAIN=True but CASHOUT_ONCHAIN is unset. "
-            "On-chain cashouts will be skipped; on-chain revenue will "
-            "stay in the wallet until you set a destination Bitcoin "
-            "address.",
-            settings=["ENABLE_CASHOUT_ONCHAIN", "CASHOUT_ONCHAIN"],
+            "On-chain cashouts enabled but no destination xpub",
+            "ENABLE_CASHOUT_ONCHAIN=True but CASHOUT_ONCHAIN_XPUB is "
+            "unset. On-chain cashouts will be skipped; on-chain "
+            "revenue will stay in the wallet until you set an xpub the "
+            "engine can derive fresh addresses from.",
+            settings=["ENABLE_CASHOUT_ONCHAIN", "CASHOUT_ONCHAIN_XPUB"],
         ))
     if PREFER_CASHOUT_ONCHAIN and not PREFER_LN_CASHOUT and (
-        not ENABLE_CASHOUT_ONCHAIN or not CASHOUT_ONCHAIN
+        not ENABLE_CASHOUT_ONCHAIN or not CASHOUT_ONCHAIN_XPUB
     ):
         # Suppressed when PREFER_LN_CASHOUT also set — that wins and
         # this PREFER_* mismatch becomes irrelevant.
@@ -8440,10 +8630,10 @@ def _check_cashout_config() -> List[Dict[str, str]]:
             "prefer-onchain-setup-mismatch", "HIGH", "cashout",
             "PREFER_CASHOUT_ONCHAIN is set but the on-chain rail isn't usable",
             f"PREFER_CASHOUT_ONCHAIN=True requires both "
-            f"ENABLE_CASHOUT_ONCHAIN=True and CASHOUT_ONCHAIN set. "
+            f"ENABLE_CASHOUT_ONCHAIN=True and CASHOUT_ONCHAIN_XPUB set. "
             f"Currently: ENABLE_CASHOUT_ONCHAIN={ENABLE_CASHOUT_ONCHAIN}, "
-            f"CASHOUT_ONCHAIN={'set' if CASHOUT_ONCHAIN else 'unset'}.",
-            settings=["PREFER_CASHOUT_ONCHAIN", "ENABLE_CASHOUT_ONCHAIN", "CASHOUT_ONCHAIN"],
+            f"CASHOUT_ONCHAIN_XPUB={'set' if CASHOUT_ONCHAIN_XPUB else 'unset'}.",
+            settings=["PREFER_CASHOUT_ONCHAIN", "ENABLE_CASHOUT_ONCHAIN", "CASHOUT_ONCHAIN_XPUB"],
         ))
     if PREFER_LN_CASHOUT and (
         not ENABLE_CASHOUT_LN or not CASHOUT_LIGHTNING_ADDRESS
@@ -8560,15 +8750,15 @@ def _check_loop_smtp_config() -> List[Dict[str, str]]:
             "disable AUTOLOOP_ENABLED.",
             settings=["AUTOLOOP_ENABLED", "LOOP_OUT_ENABLED"],
         ))
-    if LOOP_OUT_ENABLED and not CASHOUT_ONCHAIN:
+    if LOOP_OUT_ENABLED and not CASHOUT_ONCHAIN_XPUB:
         out.append(_warn(
             "loopout-without-onchain-dest", "HIGH", "loop",
-            "LOOP_OUT_ENABLED=True but CASHOUT_ONCHAIN is unset",
-            "Drain swaps (loop-out) send funds to CASHOUT_ONCHAIN. "
-            "With it unset, the drain helper is a silent no-op even "
-            "when staleness fallback or PREFER_CASHOUT_ONCHAIN would "
-            "otherwise fire it.",
-            settings=["LOOP_OUT_ENABLED", "CASHOUT_ONCHAIN"],
+            "LOOP_OUT_ENABLED=True but CASHOUT_ONCHAIN_XPUB is unset",
+            "Drain swaps (loop-out) send funds to an address derived "
+            "from CASHOUT_ONCHAIN_XPUB. With the xpub unset, the drain "
+            "helper is a silent no-op even when staleness fallback or "
+            "PREFER_CASHOUT_ONCHAIN would otherwise fire it.",
+            settings=["LOOP_OUT_ENABLED", "CASHOUT_ONCHAIN_XPUB"],
         ))
     if AUTOMATIC_LIQUIDITY_LOOPOUT_FEE_PERCENT > 0.10:
         out.append(_warn(
@@ -8718,6 +8908,122 @@ async def _check_ln_cashout_health(api: "BitcartAPI") -> List[Dict[str, str]]:
     return out
 
 
+async def _check_xpub_config(api: "BitcartAPI") -> List[Dict[str, str]]:
+    """X30 / X31 / X32. Validate the configured xpubs against the
+    detected deployment network. Soft warnings — `_pay_*_via_onchain`
+    will also soft-skip when an xpub is missing or invalid, so these
+    are operator-visibility nudges rather than gates.
+
+    Three things can go wrong:
+      X30 (unset)            — CASHOUT_ONCHAIN_XPUB or
+                                REFERRAL_ONCHAIN_DEST_XPUB is empty
+                                while the corresponding feature is
+                                enabled (on-chain cashout / on-chain
+                                referral fallback).
+      X31 (network mismatch) — a mainnet zpub on a testnet deployment
+                                (or vice versa). validate_xpub catches
+                                this with a precise reason string;
+                                we forward it to the operator.
+      X32 (BareBits xpub)    — BAREBITS_FEE_XPUB_<network> is unset
+                                or invalid. Defaults ship in config.py
+                                so the only way this fires is an
+                                operator explicitly clearing the
+                                default in user_config.py or the UI.
+    """
+    out: List[Dict[str, str]] = []
+    detected = await _detect_bitcoin_network(api)
+    network = _address_derivation_network(detected)
+    if network is None:
+        # Network detection itself failed — we can't validate xpubs
+        # against a network we couldn't determine. The other engine
+        # checks already complain about wallet/LND access failures, so
+        # don't double-report here.
+        return out
+
+    # --- Operator cashout xpub ---
+    if ENABLE_CASHOUT_ONCHAIN or PREFER_CASHOUT_ONCHAIN:
+        if CASHOUT_ONCHAIN_XPUB:
+            ok, reason = address_derivation.validate_xpub(
+                CASHOUT_ONCHAIN_XPUB, network,
+            )
+            if not ok:
+                out.append(_warn(
+                    "cashout-xpub-invalid", "HIGH", "cashout",
+                    "CASHOUT_ONCHAIN_XPUB invalid for this deployment",
+                    f"On-chain cashouts cannot derive a destination "
+                    f"address: {reason}. Set CASHOUT_ONCHAIN_XPUB to "
+                    f"an xpub matching this {network} deployment.",
+                    settings=["CASHOUT_ONCHAIN_XPUB"],
+                ))
+        # Unset case is already covered by
+        # cashout-rail-enabled-no-dest-onchain (H2) — don't duplicate.
+
+    # --- Operator referral xpub ---
+    # Only fires when the operator has actually configured a referral
+    # fee AND the engine could legitimately want the on-chain rail
+    # (no LN dest, or LN-stale fallback wired in). When both LN dest
+    # and on-chain xpub are absent, _pay_referral_via_onchain logs an
+    # error itself — no need to also raise a warning.
+    if REFERRAL_FEE_AMOUNT > 0:
+        if REFERRAL_ONCHAIN_DEST_XPUB:
+            ok, reason = address_derivation.validate_xpub(
+                REFERRAL_ONCHAIN_DEST_XPUB, network,
+            )
+            if not ok:
+                out.append(_warn(
+                    "referral-xpub-invalid", "HIGH", "fees",
+                    "REFERRAL_ONCHAIN_DEST_XPUB invalid for this deployment",
+                    f"On-chain referral fallback cannot derive a "
+                    f"destination address: {reason}. Set "
+                    f"REFERRAL_ONCHAIN_DEST_XPUB to an xpub matching "
+                    f"this {network} deployment.",
+                    settings=["REFERRAL_ONCHAIN_DEST_XPUB"],
+                ))
+        elif not REFERRAL_FEE_DEST:
+            # Both LN and on-chain referral destinations unset, with a
+            # non-zero referral fee — the engine can't deliver. Surface
+            # this distinctly from invalid-xpub because the operator
+            # needs to set EITHER a LN dest OR an xpub.
+            out.append(_warn(
+                "referral-no-destination", "HIGH", "fees",
+                "REFERRAL_FEE_AMOUNT > 0 but no referral destination configured",
+                "Neither REFERRAL_FEE_DEST (Lightning address) nor "
+                "REFERRAL_ONCHAIN_DEST_XPUB (on-chain xpub) is set; "
+                "referral payments will skip every tick.",
+                settings=["REFERRAL_FEE_DEST", "REFERRAL_ONCHAIN_DEST_XPUB"],
+            ))
+
+    # --- BareBits fee xpub for this network ---
+    bb_xpub = (
+        BAREBITS_FEE_XPUB_MAINNET if network == "mainnet"
+        else BAREBITS_FEE_XPUB_TESTNET
+    )
+    bb_setting = (
+        "BAREBITS_FEE_XPUB_MAINNET" if network == "mainnet"
+        else "BAREBITS_FEE_XPUB_TESTNET"
+    )
+    if not bb_xpub:
+        out.append(_warn(
+            "barebits-fee-xpub-unset", "HIGH", "fees",
+            f"{bb_setting} is unset",
+            f"On-chain dev-fee payments cannot derive a destination "
+            f"address: {bb_setting} is empty. The default ships in "
+            f"config.py — clearing it disables on-chain fee delivery.",
+            settings=[bb_setting],
+        ))
+    else:
+        ok, reason = address_derivation.validate_xpub(bb_xpub, network)
+        if not ok:
+            out.append(_warn(
+                "barebits-fee-xpub-invalid", "HIGH", "fees",
+                f"{bb_setting} invalid for this deployment",
+                f"On-chain dev-fee payments cannot derive a destination "
+                f"address: {reason}.",
+                settings=[bb_setting],
+            ))
+    return out
+
+
 async def compute_health_warnings(
     api: Optional["BitcartAPI"] = None,
 ) -> List[Dict[str, str]]:
@@ -8760,6 +9066,10 @@ async def compute_health_warnings(
             active.extend(await _check_ln_cashout_health(api))
         except Exception as e:
             logger.warning(f"_check_ln_cashout_health raised: {e} {traceback.format_exc()}")
+        try:
+            active.extend(await _check_xpub_config(api))
+        except Exception as e:
+            logger.warning(f"_check_xpub_config raised: {e} {traceback.format_exc()}")
     return active
 
 

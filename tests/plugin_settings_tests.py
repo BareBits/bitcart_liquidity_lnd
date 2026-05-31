@@ -156,10 +156,10 @@ def test_merge_drops_unknown_keys():
 
 
 def test_merge_with_none_clears_optional_field():
-    """User explicitly clears CASHOUT_ONCHAIN in the UI → result is None,
-    not the config default."""
-    merged = merge_with_config({"CASHOUT_ONCHAIN": None})
-    assert merged.CASHOUT_ONCHAIN is None
+    """User explicitly clears CASHOUT_ONCHAIN_XPUB in the UI → result
+    is None, not the config default."""
+    merged = merge_with_config({"CASHOUT_ONCHAIN_XPUB": None})
+    assert merged.CASHOUT_ONCHAIN_XPUB is None
 
 
 # ---------------------------------------------------------------------------
@@ -239,6 +239,7 @@ def test_run_tick_loop_respects_stop_event(monkeypatch, event_loop):
             stop.set()
 
     monkeypatch.setattr(liquidityhelper, "main", fake_main)
+    monkeypatch.setattr(liquidityhelper, "LIQUIDITY_DISABLED", False)
 
     # Tight timeout AS WELL — pytest.ini has a 60s safety kill but this
     # test should finish in milliseconds. Anything longer means
@@ -261,6 +262,7 @@ def test_run_tick_loop_respects_single_run(monkeypatch, event_loop):
         ticks.append(True)
 
     monkeypatch.setattr(liquidityhelper, "main", fake_main)
+    monkeypatch.setattr(liquidityhelper, "LIQUIDITY_DISABLED", False)
     monkeypatch.setattr(liquidityhelper, "SINGLE_RUN", True)
 
     event_loop.run_until_complete(
@@ -360,6 +362,7 @@ def test_run_tick_loop_picks_up_live_single_run_flip(monkeypatch, event_loop):
             liquidityhelper.SINGLE_RUN = True
 
     monkeypatch.setattr(liquidityhelper, "main", fake_main)
+    monkeypatch.setattr(liquidityhelper, "LIQUIDITY_DISABLED", False)
     monkeypatch.setattr(liquidityhelper, "SINGLE_RUN", False)
 
     try:
@@ -397,6 +400,7 @@ def test_run_tick_loop_survives_uncaught_exception_in_main(monkeypatch, event_lo
         liquidityhelper.SINGLE_RUN = True
 
     monkeypatch.setattr(liquidityhelper, "main", flaky_main)
+    monkeypatch.setattr(liquidityhelper, "LIQUIDITY_DISABLED", False)
     monkeypatch.setattr(liquidityhelper, "SINGLE_RUN", False)
     # Patch asyncio.sleep to return instantly — the 60-second backoff
     # in run_tick_loop is conceptually right but we don't want to
@@ -441,6 +445,7 @@ def test_run_tick_loop_survives_many_consecutive_exceptions(
         raise ValueError(f"failure #{ticks['n']}")
 
     monkeypatch.setattr(liquidityhelper, "main", always_broken_main)
+    monkeypatch.setattr(liquidityhelper, "LIQUIDITY_DISABLED", False)
     monkeypatch.setattr(liquidityhelper, "SINGLE_RUN", False)
     # Capture the real asyncio.sleep BEFORE monkeypatching, otherwise
     # the replacement would call itself and recurse.
@@ -475,6 +480,8 @@ def test_run_tick_loop_propagates_cancelled_error(monkeypatch, event_loop):
         raise asyncio.CancelledError()
 
     monkeypatch.setattr(liquidityhelper, "main", cancelling_main)
+    monkeypatch.setattr(liquidityhelper, "LIQUIDITY_DISABLED", False)
+    monkeypatch.setattr(liquidityhelper, "LIQUIDITY_DISABLED", False)
     monkeypatch.setattr(liquidityhelper, "SINGLE_RUN", False)
 
     try:

@@ -65,8 +65,31 @@ You can run this either as a **standalone script** (existing path — talks to B
 
 ## Fees
 - **Developer fee** — 2% net, charged on all revenue received on a `liquidityhelper` wallet. Network fees the script incurs on your behalf (channel opens, LSP service fees, cashout miner fees, fee-payment routing fees, etc.) are deducted from the 2% so your *net* fee stays at 2% — if the script spends 0.5% on network fees, only 1.5% reaches the developer.
-- **Referral fee** (optional, off by default) — a flat additional percentage on top of the 2%, paid to a third party (typically a whitelabel distributor or installer). Configured via `REFERRAL_FEE_AMOUNT` (e.g. `0.02` = 2% extra), `REFERRAL_FEE_DEST` (Lightning Address), and `REFERRAL_ONCHAIN_DEST` (on-chain fallback when LN routing has been stale for `REFERRAL_SWITCH_TO_ONCHAIN_AFTER_X_DAYS` days). Unlike the developer fee, the referrer receives the **gross** percentage — the LN/on-chain network cost of delivering the referral payment comes out of the developer's 2%, not the referrer's share. Leave `REFERRAL_FEE_AMOUNT = 0.0` (the default) if you have no referral arrangement.
+- **Referral fee** (optional, off by default) — a flat additional percentage on top of the 2%, paid to a third party (typically a whitelabel distributor or installer). Configured via `REFERRAL_FEE_AMOUNT` (e.g. `0.02` = 2% extra), `REFERRAL_FEE_DEST` (Lightning Address), and `REFERRAL_ONCHAIN_DEST_XPUB` (on-chain fallback when LN routing has been stale for `REFERRAL_SWITCH_TO_ONCHAIN_AFTER_X_DAYS` days). Unlike the developer fee, the referrer receives the **gross** percentage — the LN/on-chain network cost of delivering the referral payment comes out of the developer's 2%, not the referrer's share. Leave `REFERRAL_FEE_AMOUNT = 0.0` (the default) if you have no referral arrangement.
 - **BareBits top-up returns** — when BareBits has paid a `topupbarebits` invoice into your wallet to lubricate a new installation with inbound liquidity, the principal is repaid back to BareBits via lightning over subsequent fee-payment ticks. The repayment is independent of the 2% developer fee: liquidity costs (channel opens, LSP service fees) acquired with those funds count against the 2% cap as normal; the full BareBits principal is returned over time as the wallet accumulates LN outbound. Repayment is gated on the store first reaching its inbound-liquidity target so the channels funded by the top-up have actually been provisioned before any funds flow back. LN-only; no on-chain fallback.
+
+## On-chain destinations (xpub-derived addresses)
+
+On-chain payments — cashouts, on-chain dev-fee fallbacks, on-chain referral fallbacks, and loop-out drains — all use xpub-derived addresses, not fixed addresses. Each send picks the next unused receive-chain address (`<xpub>/0/<N>`) from a counter stored locally, so the recipient receives a fresh address per transaction. This is standard Bitcoin wallet practice and significantly improves on-chain privacy on the receive side (blockchain explorers can no longer attribute the total of all your cashouts to a single accumulating address).
+
+Three operator-controlled settings:
+
+- `CASHOUT_ONCHAIN_XPUB` — operator's own xpub for on-chain cashouts. Required when `ENABLE_CASHOUT_ONCHAIN=True` OR `PREFER_CASHOUT_ONCHAIN=True`.
+- `REFERRAL_ONCHAIN_DEST_XPUB` — operator's referral partner's xpub. Required when `REFERRAL_FEE_AMOUNT > 0` and the LN referral rail is unavailable / stale.
+- BareBits's developer-fee xpubs (`BAREBITS_FEE_XPUB_MAINNET`, `BAREBITS_FEE_XPUB_TESTNET`) ship as defaults in `config.py`. Don't change unless you have an alternative arrangement.
+
+Accepted xpub formats: any standard BIP-32 extended public key. Version bytes determine the address type that gets derived:
+
+| Network | Legacy P2PKH | Wrapped segwit P2SH-P2WPKH | Native segwit P2WPKH |
+|---|:---:|:---:|:---:|
+| Mainnet | `xpub` (`1...`) | `ypub` (`3...`) | `zpub` (`bc1q...`) |
+| Testnet / signet / Mutinynet / regtest | `tpub` (`m.../n...`) | `upub` (`2...`) | `vpub` (`tb1q.../bcrt1q...`) |
+
+Most modern wallets export a `zpub`/`vpub` by default. Both depth-1 (Electrum native-segwit default — derived from `m/0'`) and depth-3 (strict BIP-44/49/84 — `m/84'/0'/0'` etc) xpubs are supported.
+
+**Network validation**: the engine cross-checks each xpub's version-byte family against the deployment's detected Bitcoin network at startup AND on every payment. A mainnet `zpub` on a testnet deployment (or vice versa) is rejected with a clear error in the engine log and a red banner on the plugin dashboard — operator funds never silently land on the wrong network. Testnet `vpub` is automatically re-encoded with the regtest HRP (`bcrt1q...`) on regtest deployments, so one testnet xpub serves testnet3 / testnet4 / signet / Mutinynet / regtest.
+
+**Migration from earlier versions**: prior versions used fixed-address settings (`CASHOUT_ONCHAIN`, `REFERRAL_ONCHAIN_DEST`, `ONCHAIN_FEE_DEST`). Those have been replaced by the `_XPUB` variants above. Export an xpub from your wallet (Electrum: Wallet → Information → Master Public Key; hardware wallets: account-level zpub/vpub via your wallet's exporter) and set it as the new value. The on-chain rail soft-fails (logs the error, skips the tx) until you complete the migration; LN cashouts and fee payments continue unaffected meanwhile.
 
 ## Privacy
 This script runs locally only and does not report your transaction data or other private information to any external place. The script queries our server for a list of lightning nodes (and queries Magma for information about those nodes) and manages its node list autonomously.

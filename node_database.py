@@ -411,6 +411,43 @@ class LndPaymentLabel(BaseModel):
     created: datetime = DateTimeField(default=datetime.now)
 
 
+class DerivedAddressIndex(BaseModel):
+    """Per-xpub counter for the next-unused BIP32 receive-chain index.
+
+    The on-chain payment paths (cashout, dev fee, referral) derive a
+    fresh address per send from a configured xpub, using path
+    `<xpub>/0/<next_index>`. After a successful send the counter
+    increments and persists, so the next call to the same xpub gets
+    a different address. Same store-of-state pattern as LspChannelOrder
+    et al. — outlives engine restarts; readers and writers go through
+    address_derivation.
+
+    Why xpub is the primary key (not a composite with purpose):
+      The xpub identifies a logical "destination wallet" managed by the
+      recipient. Each xpub has one canonical receive chain — if a single
+      wallet is used for multiple purposes (e.g. operator points both
+      CASHOUT and REFERRAL at the same wallet, even though that's
+      unusual), addresses across purposes should stay monotonically
+      ordered for the recipient's wallet-scanning to see them all
+      naturally. Bookkeeping the `last_purpose` for diagnostics is
+      cheap, but the index counter is per-xpub.
+
+    Starting value:
+      next_index defaults to 0. For the BareBits mainnet fee xpub
+      specifically, index 0 corresponds to the legacy hardcoded
+      `bc1q586um24k7zr6swxqny5qqgqn8xt43pk4xeeg9g` address — so the
+      first fee payment under the new code naturally continues
+      sending to that same address, with subsequent payments rotating.
+    """
+    xpub: str = CharField(unique=True, primary_key=True)
+    # last_purpose is "cashout" | "fee" | "referral". Free-form text
+    # rather than an enum so future purposes can be added without a
+    # schema change.
+    last_purpose: str = CharField()
+    next_index: int = IntegerField(default=0)
+    updated: datetime = DateTimeField(default=datetime.now)
+
+
 class Rebalance(BaseModel):
     """One row per SUCCESSFUL circular rebalance. The engine fires
     periodic self-payments to keep channel balances in motion (which
@@ -723,6 +760,7 @@ node_db.connect()
 node_db.create_tables([
     LightningNode, LightningChannel, LndPaymentLabel,
     SwapPriceQuote, LspPriceQuote, LspChannelOrder, Rebalance,
+    DerivedAddressIndex,
 ])
 
 
