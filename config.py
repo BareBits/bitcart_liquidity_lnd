@@ -398,8 +398,10 @@ REFERRAL_SWITCH_TO_ONCHAIN_AFTER_X_DAYS: Optional[int] = 30
 # payments, channel creation, topup notifications — everything in
 # main() is gated by this. Dashboard endpoints (liquidity stats,
 # settings, logs) continue to serve normally so the operator can
-# diagnose and re-enable. Default False (engine runs).
-LIQUIDITY_DISABLED: bool = False
+# diagnose and re-enable. Default True (engine paused) so a fresh
+# install never spends operator funds without an explicit opt-in via
+# the dashboard Settings dropdown.
+LIQUIDITY_DISABLED: bool = True
 
 
 # =============================================================================

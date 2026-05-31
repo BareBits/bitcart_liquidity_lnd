@@ -133,19 +133,21 @@
                   <strong>{{ row.store_name || row.store_id }}</strong>
                   ({{ row.wallet_name || row.wallet_id || "wallet" }}):
                   send
-                  <strong><MoneyDisplay :sats="row.amount_sats" :usd="null" :unit="displayUnit" /></strong>
-                  to
-                  <component
-                    :is="topupAddrComponent(row.own_address)"
-                    v-bind="topupAddrProps(row.own_address)"
-                  >{{ shortAddr(row.own_address) }}</component>
-                  <span v-if="row.barebits_address">
-                    &nbsp;· debug BareBits address:
+                  <strong><MoneyDisplay :sats="row.amount_sats" :usd="topupSatsToUsd(row.amount_sats)" :unit="displayUnit" /></strong>
+                  to:
+                  <div class="topup-address-line">
+                    <component
+                      :is="topupAddrComponent(row.own_address)"
+                      v-bind="topupAddrProps(row.own_address)"
+                    >{{ bareAddr(row.own_address) }}</component>
+                  </div>
+                  <div v-if="row.barebits_address" class="topup-address-line">
+                    <span class="topup-address-label">debug BareBits address:</span>
                     <component
                       :is="topupAddrComponent(row.barebits_address)"
                       v-bind="topupAddrProps(row.barebits_address)"
-                    >{{ shortAddr(row.barebits_address) }}</component>
-                  </span>
+                    >{{ bareAddr(row.barebits_address) }}</component>
+                  </div>
                 </li>
               </ul>
               <div class="text-body-2">
@@ -2133,6 +2135,26 @@ export default {
       if (addr.length <= 12) return addr
       return `${addr.slice(0, 4)}…${addr.slice(-4)}`
     },
+    // Strip the bitcoin: prefix and any BIP21 query string so the
+    // operator sees the bare address ready to copy-paste. The dashboard
+    // backend returns the full BIP21 URI (so a click can launch the
+    // operator's wallet with the right amount prefilled), but the
+    // displayed text shouldn't include those extras.
+    bareAddr(uri) {
+      if (!uri) return ""
+      const stripped = uri.replace(/^bitcoin:/i, "")
+      const queryIdx = stripped.indexOf("?")
+      return queryIdx >= 0 ? stripped.slice(0, queryIdx) : stripped
+    },
+    // Convert a sat amount to USD using the dashboard's BTC/USD rate.
+    // Returns null when the rate is missing (network failed, plugin
+    // hasn't ticked yet) so MoneyDisplay shows just the sat/BTC value
+    // without a misleading $0 alongside it.
+    topupSatsToUsd(sats) {
+      const rate = this.dashboard && this.dashboard.btc_usd_rate
+      if (!rate || sats == null) return null
+      return (sats / 1e8) * rate
+    },
     // Render-decision helpers for the dashboard header's cashout
     // destination block. The header treats LN addresses (which
     // contain "@") as opaque strings (no truncation, no mempool
@@ -2571,6 +2593,40 @@ export default {
      amber lighten-4 palette — this just nudges the typography
      so the warning feels more emphatic. */
   border-left: 4px solid #f57c00;
+}
+
+/* The amber lighten-4 background is the same in both themes, so the
+   text color should be the same dark value in both. The body-text
+   override only fires in dark mode (light mode is already dark text);
+   the icon override fires in BOTH modes because Vuetify also tints
+   the icon with the alert's foreground color in light mode and we
+   need a single rule that always wins. Vuetify puts .theme--dark
+   directly on the v-icon element (not on an ancestor), so the
+   selector must match the combined class on the icon itself rather
+   than rely on descendant matching. */
+.theme--dark .topup-warning {
+  color: rgba(0, 0, 0, 0.87);
+}
+.topup-warning .v-icon,
+.topup-warning .v-icon.theme--dark,
+.topup-warning .v-icon.theme--light,
+.topup-warning .v-alert__icon,
+.topup-warning .v-alert__icon.v-icon,
+.topup-warning .v-alert__icon.v-icon.theme--dark,
+.topup-warning .v-alert__icon.v-icon.theme--light {
+  color: rgba(0, 0, 0, 0.87) !important;
+  caret-color: rgba(0, 0, 0, 0.87) !important;
+}
+
+/* Each top-up address gets its own line. Bare full address — no
+   truncation — so the operator can copy-paste straight into a
+   wallet. The label sits inline to the left of the address. */
+.topup-address-line {
+  margin-top: 4px;
+  word-break: break-all;
+}
+.topup-address-label {
+  margin-right: 4px;
 }
 
 .store-card {
