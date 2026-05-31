@@ -4,7 +4,15 @@ import httpx
 from datetime import datetime
 from common_functions import sats_to_btc, btc_to_sats
 from config import *
-from user_config import *
+# user_config.py is an OPTIONAL local override file (see config.py, which
+# applies it the same way). It is absent in plugin mode — where settings
+# come from the Bitcart admin UI / LIQUIDITYHELPER_* env — so the import
+# must not be mandatory, or the whole engine fails to import and the
+# plugin never loads.
+try:
+    from user_config import *  # noqa: F401,F403
+except ImportError:
+    pass
 from dataclasses import dataclass
 import requests,logging
 import traceback
