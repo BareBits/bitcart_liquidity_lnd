@@ -2618,6 +2618,29 @@ export default {
   caret-color: rgba(0, 0, 0, 0.87) !important;
 }
 
+/* Light mode: every warning banner (top-up, shared-wallet, and the
+   health/config warnings — including the "no SMTP credentials" one) sits
+   on a pale amber/red fill. The health warnings use Vuetify's `text`
+   variant, which tints their text with the warning/error FOREGROUND
+   colour — washed out and hard to read on the pale fill in the light
+   theme. Force dark text + icons so warnings stay legible in light mode.
+   (The dark-mode top-up case is handled by the block above.) */
+.theme--light .topup-warning,
+.theme--light .shared-wallet-warning,
+.theme--light .health-warning,
+.theme--light .topup-warning .v-alert__content,
+.theme--light .shared-wallet-warning .v-alert__content,
+.theme--light .health-warning .v-alert__content,
+.theme--light .topup-warning .v-icon,
+.theme--light .shared-wallet-warning .v-icon,
+.theme--light .health-warning .v-icon,
+.theme--light .topup-warning .v-alert__icon,
+.theme--light .shared-wallet-warning .v-alert__icon,
+.theme--light .health-warning .v-alert__icon {
+  color: rgba(0, 0, 0, 0.87) !important;
+  caret-color: rgba(0, 0, 0, 0.87) !important;
+}
+
 /* Each top-up address gets its own line. Bare full address — no
    truncation — so the operator can copy-paste straight into a
    wallet. The label sits inline to the left of the address. */
