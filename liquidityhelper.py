@@ -24,8 +24,6 @@ from peewee import DoesNotExist
 import requests
 import time
 
-import notifications
-from notifications import EmailNotificationProvider,NotificationProvider
 from typing import Dict, Any, Optional
 
 
@@ -540,7 +538,40 @@ from node_database import LightningNode, LightningChannel,is_node_blacklisted, a
 
 LAST_FEE_CHECK = datetime.datetime.now()
 START_TIME = datetime.datetime.now()
-NOTIFICATION_PROVIDERS:List[NotificationProvider]=[]
+
+# Store-owner email notifier, injected by the plugin layer (which has
+# in-process access to Bitcart's email machinery + DB). Async callable
+# (store_id, subject, body) -> None. None in standalone mode, so owner
+# emails simply aren't sent there.
+_store_owner_notifier: Optional[Callable[..., Any]] = None
+
+
+def set_store_owner_notifier(fn: Optional[Callable[..., Any]]) -> None:
+    """Register (or clear) the Bitcart-backed store-owner email notifier.
+    Called by the plugin layer during worker_setup."""
+    global _store_owner_notifier
+    _store_owner_notifier = fn
+
+
+async def _send_store_owner_email(store_id: str, subject: str, body: str) -> None:
+    """Dispatch a notification email to the owner of `store_id` via the
+    injected Bitcart notifier. No-op (debug log) when none is registered
+    (e.g. standalone mode)."""
+    if _store_owner_notifier is None:
+        logger.debug(
+            "No store-owner notifier registered; skipping owner email for store %s",
+            store_id,
+        )
+        return
+    try:
+        await _store_owner_notifier(store_id, subject, body)
+    except Exception as e:
+        logger.error(
+            f"Failed to send store-owner notification for store {store_id}: "
+            f"{e} {traceback.format_exc()}"
+        )
+
+
 def hash_string(mystring: str) -> str:
     # Encode the string to bytes
     encoded_string = mystring.encode("utf-8")
@@ -6462,9 +6493,8 @@ async def calculate_topups(
                     "top-up.",
                     store['name'],
                 )
-            if NOTIFICATION_PROVIDERS and not suppress_email:
-                for notifier in NOTIFICATION_PROVIDERS:
-                    body = f"""
+            if not suppress_email:
+                body = f"""
                     Warning: your wallet on store {store['name']} (wallet id {fetched_wallet['id']}) does not have sufficient inbound liquidity. This does not need to be immediately remedied, but we suggest doing so for the best performance from your Bitcart installation.
                     
                     Insufficient inbound liquidity can result in your customers not being able to make payments with Bitcoin lightning (higher fees, slower payments). On-chain payments will continue to work. Additionally, while liquidity is too low, your Bitcart installation will hold onto on-chain payments until additional liquidity can be created, which delays the time between when you receive payments and when they are delivered to you.
@@ -6475,10 +6505,17 @@ async def calculate_topups(
     
                     If you do not deposit more funds for liquidity, on-chain payments from customers will accumulate until sufficient liquidity is re-established. Once that has happened, those on-chain payments will be delivered to {CASHOUT_LIGHTNING_ADDRESS} minus fees.
                     """
-                    subject=f"Warning: low liquidity on your Bitcart store {store['name']}"
-                    await run_every_x_days(my_func=notifier.notify,days=30,body=body,subject=subject)
-            elif not NOTIFICATION_PROVIDERS:
-                logger.debug('Would have warned about needing topup but no notification providers configured')
+                subject=f"Warning: low liquidity on your Bitcart store {store['name']}"
+                # Email the store owner via Bitcart's installation-wide SMTP,
+                # throttled per store (hash_arguments keys on store_id) so a
+                # persistent low-liquidity condition pings the owner at most
+                # once per 30 days.
+                async def _notify_owner(store_id):
+                    await _send_store_owner_email(store_id, subject, body)
+                await run_every_x_days(
+                    my_func=_notify_owner, days=30,
+                    hash_arguments=True, store_id=store['id'],
+                )
             return own_invoice, bb_invoice
         except Exception as e:
             logger.error(f"Error calculating topups: {e} {store} {traceback.format_exc()}")
@@ -6673,21 +6710,6 @@ async def decide_onchain_to_ln(api:BitcartAPI):
         best_wallet=await api.get_best_ln_wallet_for_store(store)
         logger.debug(f'Moving leftover onchain funds to ln... {max_channel_size} sats {sats_to_btc(max_channel_size)} BTC, store {store_id}')
         onchain_move_result=await move_onchain_to_ln(wallet_id=best_wallet['id'],amount_sats=max_channel_size,api=api)
-
-async def setup_notifiers()->List[NotificationProvider]:
-    return_list=[]
-    if SMTP_USERNAME and SMTP_TO_EMAIL and SMTP_PASSWORD and SMTP_FROM_EMAIL and SMTP_FROM_NAME and SMTP_PORT and SMTP_SERVER:
-        my_notifier=notifications.EmailNotificationProvider(name='mymail',from_email=SMTP_FROM_EMAIL,from_name=SMTP_FROM_NAME,password=SMTP_PASSWORD,username=SMTP_USERNAME,smtp_server=SMTP_SERVER,smtp_port=SMTP_PORT,tls_enabled=SMTP_TLS,ssl_enabled=SMTP_SSL,to_email=SMTP_TO_EMAIL)
-        try:
-            await my_notifier.test_connection()
-        except Exception as e:
-            logger.error(f'Error connecting to SMTP server: {e} {traceback.format_exc()}')
-        else:
-            return_list.append(my_notifier)
-    else:
-        logger.warning('No SMTP notification provider config found')
-    return return_list
-
 
 # ---------------------------------------------------------------------------
 # Submarine swaps (LN -> on-chain). Production swap initiation is gated by
@@ -8843,45 +8865,6 @@ def _check_loop_smtp_config() -> List[Dict[str, str]]:
             f"never find an amount in the empty range.",
             settings=["AUTOLOOP_MIN_SWAP_AMOUNT_SAT", "AUTOLOOP_MAX_SWAP_AMOUNT_SAT"],
         ))
-    if SMTP_TLS and SMTP_SSL:
-        out.append(_warn(
-            "smtp-tls-and-ssl", "MEDIUM", "smtp",
-            "SMTP_TLS and SMTP_SSL are both True",
-            "These are mutually exclusive (STARTTLS vs implicit SSL). "
-            "Pick one: TLS for ports like 587, SSL for port 465.",
-            settings=["SMTP_TLS", "SMTP_SSL"],
-        ))
-    # Partial SMTP config — at least one of the six required fields is
-    # set while at least one other is missing. Treat all-unset as "user
-    # has opted out of SMTP" (no warning); treat all-set as "SMTP is
-    # configured" (no warning). Anything in between is the footgun.
-    smtp_required = (
-        SMTP_SERVER, SMTP_PORT, SMTP_FROM_EMAIL, SMTP_TO_EMAIL,
-        SMTP_USERNAME, SMTP_PASSWORD,
-    )
-    smtp_set = [bool(v) for v in smtp_required]
-    if any(smtp_set) and not all(smtp_set):
-        missing = []
-        for name, present in zip(
-            ("SMTP_SERVER", "SMTP_PORT", "SMTP_FROM_EMAIL",
-             "SMTP_TO_EMAIL", "SMTP_USERNAME", "SMTP_PASSWORD"),
-            smtp_set,
-        ):
-            if not present:
-                missing.append(name)
-        out.append(_warn(
-            "smtp-partial-config", "MEDIUM", "smtp",
-            "SMTP partially configured — email notifications won't fire",
-            f"Some SMTP fields are set but these are still missing: "
-            f"{', '.join(missing)}. Notifications won't be sent until "
-            f"every required field is set, OR clear them all to opt "
-            f"out of SMTP.",
-            # Surface the icon on the SMTP group regardless of which
-            # specific fields are missing — operator clicks the group
-            # to expand it and sees which row needs filling in.
-            settings=["SMTP_SERVER", "SMTP_PORT", "SMTP_FROM_EMAIL",
-                      "SMTP_TO_EMAIL", "SMTP_USERNAME", "SMTP_PASSWORD"],
-        ))
     return out
 
 
@@ -9667,7 +9650,6 @@ async def main():
     global LAST_FEE_CHECK
     global START_TIME
     global AUTH_TOKEN
-    global NOTIFICATION_PROVIDERS
     # PyCharm remote-debug attach. _load_debug_env_file() sources
     # PYCHARM_DEBUG_HOST/PORT from a file when running inside the
     # bitcart container (where the launcher can't reach the host env
@@ -9685,13 +9667,6 @@ async def main():
         SimpleCacheField.delete_expired()
     except Exception as e:
         logger.error(f'Error deleting expired cache entries {e} {traceback.format_exc()}')
-    # init notifications
-    try:
-        if isinstance(NOTIFICATION_PROVIDERS,list):
-            if len(NOTIFICATION_PROVIDERS)==0:
-                NOTIFICATION_PROVIDERS=await run_every_x_hours(my_func=setup_notifiers,hours=6)
-    except Exception as e:
-        logger.error(f'Not able to setup notifications, please see logs! {e} {traceback.format_exc()}')
     # init Bitcart API.
     #
     # The shared tick API is rebuilt only when URL or token changes

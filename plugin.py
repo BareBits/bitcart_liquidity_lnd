@@ -490,6 +490,22 @@ class Plugin(BasePlugin):
 
         apply_settings(current_settings)
 
+        # Wire the engine's notifications to Bitcart's email: alerts go to
+        # the relevant store owner via Bitcart's installation-wide SMTP
+        # (Server Management -> Policies). The engine carries no SMTP config
+        # of its own; without this injection (e.g. standalone mode) owner
+        # emails are simply skipped.
+        try:
+            from .bitcart_plugin.owner_notifications import make_store_owner_notifier
+            liquidityhelper.set_store_owner_notifier(
+                make_store_owner_notifier(self.context.container)
+            )
+        except Exception:
+            logger.exception(
+                "worker_setup: failed to wire the Bitcart store-owner notifier; "
+                "low-liquidity emails will be skipped until the next restart"
+            )
+
         # Spawn the tick loop. Bitcart owns the asyncio loop; we just
         # add a task. Attach a done-callback so that if the task ends
         # with an uncaught exception (which run_tick_loop's outer
