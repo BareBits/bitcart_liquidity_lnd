@@ -39,10 +39,9 @@ def test_every_schema_field_has_matching_config_default():
     with an equal default value. Drift detector — if you add a new knob
     to config.py, add it to the schema too (and vice versa).
 
-    Two exceptions where we deliberately differ from config.py:
+    One exception where we deliberately differ from config.py:
       - AUTH_TOKEN: schema default is None; config default is also None
         but the plugin overwrites it with the bearer token it acquires.
-      - SMTP_*: optional; both default to None.
     """
     import config
 

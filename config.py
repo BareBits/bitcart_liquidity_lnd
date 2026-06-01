@@ -892,42 +892,15 @@ AUTOLOOP_EASY_EXCLUDED_PEERS: List[str] = []
 
 
 # =============================================================================
-# === Notifications (SMTP) ===
+# === Notifications ===
 # =============================================================================
 #
-# Email notifications for noteworthy events (channel close, stuck
-# funds, etc.). All fields must be set for email to actually fire;
-# any single field left as None disables email notifications.
-
-# SMTP server hostname or IP, e.g. "smtp.gmail.com".
-SMTP_SERVER: Optional[str] = None
-
-# SMTP server port. 587 for TLS, 465 for SSL, 25 for unencrypted.
-SMTP_PORT: Optional[int] = None
-
-# Use STARTTLS. Set True for ports like 587. Mutually exclusive with
-# SMTP_SSL.
-SMTP_TLS: bool = False
-
-# Use implicit SSL. Set True for port 465. Mutually exclusive with
-# SMTP_TLS.
-SMTP_SSL: bool = False
-
-# "From" email address — must usually match the authenticated SMTP user.
-SMTP_FROM_EMAIL: Optional[str] = None
-
-# Friendly display name shown alongside the "From" address.
-SMTP_FROM_NAME: Optional[str] = "LiquidityHelper"
-
-# Destination email address for notifications.
-SMTP_TO_EMAIL: Optional[str] = None
-
-# SMTP username (often the same as SMTP_FROM_EMAIL).
-SMTP_USERNAME: Optional[str] = None
-
-# SMTP password or app-specific password. NEVER commit this to git;
-# set via environment variable or user_config.py outside version control.
-SMTP_PASSWORD: Optional[str] = None
+# The plugin no longer carries its own SMTP settings. In plugin mode it
+# sends notifications to the relevant store owner through Bitcart's own
+# email machinery, using Bitcart's installation-wide SMTP (Server
+# Management -> Policies). See bitcart_plugin/owner_notifications.py.
+# Configure SMTP at the Bitcart installation level (the deploy script can
+# set it from BITCART_SMTP_* env vars).
 
 
 # =============================================================================

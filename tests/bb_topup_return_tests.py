@@ -415,8 +415,8 @@ def test_calculate_topups_creates_bb_topup_invoice_with_priced_amount(
     monkeypatch.setattr(liquidityhelper, "store_needs_topup",
                         fake_store_needs_topup)
     monkeypatch.setattr(liquidityhelper, "AUTOMATIC_RESERVE_SAFETY_SAT", 1000)
-    # No notification providers configured — keeps the test self-contained
-    monkeypatch.setattr(liquidityhelper, "NOTIFICATION_PROVIDERS", [])
+    # No store-owner notifier injected — keeps the test self-contained (no email)
+    monkeypatch.setattr(liquidityhelper, "_store_owner_notifier", None)
 
     api = _FakeApi()
     event_loop.run_until_complete(liquidityhelper.calculate_topups(api))
