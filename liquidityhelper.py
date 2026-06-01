@@ -6302,6 +6302,44 @@ def btc_address_from_invoice(invoice: dict)->Optional[str]:
         return payment["payment_url"]
 
 
+async def _wallet_is_brand_new_lnd(api: "BitcartAPI", wallet: Dict[str, Any]) -> bool:
+    """True only for a freshly-created LND wallet that has never been
+    funded: zero on-chain balance AND no on-chain transactions.
+
+    Used to suppress the low-liquidity email on a brand-new install. On a
+    fresh deploy the liquidityhelper wallet starts empty, so the very
+    first tick detects a reserve deficit and would otherwise fire a
+    "top up your wallet" email immediately — but the operator already
+    knows funding is required (the dashboard shows the top-up), so that
+    first email is just noise.
+
+    Only meaningful for LND (btclnd) wallets: the on-chain transaction
+    history comes from Lightning.GetTransactions over gRPC. For any other
+    wallet type, or if the gRPC call fails, returns False so the email
+    still fires — fail open, since a redundant email beats a silently
+    dropped one.
+    """
+    if wallet.get("currency") != "btclnd":
+        return False
+    try:
+        balance_sats = btc_to_sats(float(wallet.get("balance") or 0))
+    except (TypeError, ValueError):
+        return False
+    if balance_sats != 0:
+        return False
+    try:
+        resp = await lnd_rpc(api, wallet["id"], "GetTransactions", {}, "Lightning")
+    except Exception as e:
+        logger.debug(
+            "_wallet_is_brand_new_lnd: GetTransactions failed for wallet %s "
+            "(%s); not suppressing the low-liquidity email",
+            wallet.get("id"), e,
+        )
+        return False
+    txs = resp.get("transactions") if isinstance(resp, dict) else None
+    return not txs
+
+
 async def calculate_topups(
     api: BitcartAPI
 ) -> Optional[Tuple[Union[str,None],Union[str,None]]]:
@@ -6409,7 +6447,22 @@ async def calculate_topups(
             )
             logger.info(f"If Bitcart Admin is paying: {own_invoice}")
             logger.info(f"If BareBits is paying: {bb_invoice}")
-            if NOTIFICATION_PROVIDERS:
+            # Suppress ONLY the email (not the dashboard warning or the
+            # invoices above) when this is a brand-new, never-funded LND
+            # wallet — avoids an immediate "top up" email on a fresh
+            # install where funding is already expected and shown on the
+            # dashboard. The email resumes once the wallet has any balance
+            # or transaction history.
+            suppress_email = await _wallet_is_brand_new_lnd(api, fetched_wallet)
+            if suppress_email:
+                logger.info(
+                    "Suppressing low-liquidity email for store %s: its "
+                    "liquidityhelper wallet is brand-new (0 on-chain balance, "
+                    "no transactions). The dashboard still shows the required "
+                    "top-up.",
+                    store['name'],
+                )
+            if NOTIFICATION_PROVIDERS and not suppress_email:
                 for notifier in NOTIFICATION_PROVIDERS:
                     body = f"""
                     Warning: your wallet on store {store['name']} (wallet id {fetched_wallet['id']}) does not have sufficient inbound liquidity. This does not need to be immediately remedied, but we suggest doing so for the best performance from your Bitcart installation.
@@ -6424,7 +6477,7 @@ async def calculate_topups(
                     """
                     subject=f"Warning: low liquidity on your Bitcart store {store['name']}"
                     await run_every_x_days(my_func=notifier.notify,days=30,body=body,subject=subject)
-            else:
+            elif not NOTIFICATION_PROVIDERS:
                 logger.debug('Would have warned about needing topup but no notification providers configured')
             return own_invoice, bb_invoice
         except Exception as e:
