@@ -233,16 +233,31 @@ async def _get_or_create_plugin_token(container: Any, settings: Any) -> str:
                     "settings to auto-create one, or register an admin "
                     "through Bitcart's normal UI first."
                 )
-            await _bootstrap_admin_via_http(email, password)
-            superuser = await _find_first_superuser(user_repo)
-            if superuser is None:
-                # HTTP call reported success but the row isn't here — could
-                # be a transaction-visibility issue. Bail loudly rather
-                # than blunder onwards.
-                raise RuntimeError(
-                    "liquidityhelper plugin: HTTP bootstrap succeeded "
-                    "but no superuser is visible in the DB session."
-                )
+            try:
+                await _bootstrap_admin_via_http(email, password)
+            except Exception:
+                # The backend and worker processes both run this on a
+                # fresh install: one may create the first admin while the
+                # other's POST is still in flight (the loser then gets
+                # "registration disabled"), and on first boot the backend
+                # API may not be accepting connections yet (ConnectError).
+                # Re-check the DB before failing — if a superuser exists
+                # now (created concurrently) we can proceed; otherwise
+                # re-raise so _acquire_plugin_token's retry loop can back
+                # off and try again once the API is reachable.
+                superuser = await _find_first_superuser(user_repo)
+                if superuser is None:
+                    raise
+            else:
+                superuser = await _find_first_superuser(user_repo)
+                if superuser is None:
+                    # HTTP call reported success but the row isn't here —
+                    # could be a transaction-visibility issue. Bail loudly
+                    # rather than blunder onwards.
+                    raise RuntimeError(
+                        "liquidityhelper plugin: HTTP bootstrap succeeded "
+                        "but no superuser is visible in the DB session."
+                    )
 
         token_row = models.Token(
             user_id=superuser.id,
@@ -251,6 +266,42 @@ async def _get_or_create_plugin_token(container: Any, settings: Any) -> str:
         )
         await token_repo.add(token_row)
         return token_row.id
+
+
+async def _acquire_plugin_token(container: Any, settings: Any) -> str:
+    """`_get_or_create_plugin_token` with backoff for first-boot races.
+
+    On a fresh deploy, startup()/worker_setup() run as the containers come
+    up — often BEFORE Bitcart's backend API (gunicorn) is accepting
+    connections. The admin-bootstrap POST then fails with a transport-level
+    error, and without a retry the very first deploy never creates the
+    admin user / plugin token (the operator has to restart the containers
+    by hand). Retry on connection/timeout errors with exponential backoff
+    until the API is reachable. Errors that won't fix themselves (e.g.
+    ADMIN_EMAIL/ADMIN_PASSWORD unset → RuntimeError) are NOT retried; they
+    propagate immediately.
+    """
+    import httpx
+
+    delay = 2.0
+    max_delay = 15.0
+    max_attempts = 40  # generous: ~6 min total, covers a slow first boot
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return await _acquire_plugin_token(container, settings)
+        except (httpx.TransportError, ConnectionError, OSError) as e:
+            if attempt >= max_attempts:
+                logger.error(
+                    "plugin token acquisition failed after %d attempts; the "
+                    "backend API never became reachable (%s)", attempt, e,
+                )
+                raise
+            logger.warning(
+                "plugin token acquisition attempt %d failed — backend API "
+                "not ready yet (%s); retrying in %.0fs", attempt, e, delay,
+            )
+            await asyncio.sleep(delay)
+            delay = min(delay * 1.5, max_delay)
 
 
 class Plugin(BasePlugin):
@@ -361,7 +412,7 @@ class Plugin(BasePlugin):
         # to happen here as well.
         try:
             current_settings = await self._load_settings()
-            token = await _get_or_create_plugin_token(
+            token = await _acquire_plugin_token(
                 self.context.container, current_settings
             )
             current_settings = current_settings.model_copy(update={"AUTH_TOKEN": token})
@@ -475,7 +526,7 @@ class Plugin(BasePlugin):
         # ADMIN_EMAIL/ADMIN_PASSWORD to bootstrap the first admin if
         # the install is fresh (no superuser exists yet).
         try:
-            token = await _get_or_create_plugin_token(
+            token = await _acquire_plugin_token(
                 self.context.container, current_settings
             )
         except Exception:
@@ -593,7 +644,7 @@ class Plugin(BasePlugin):
         # some reason, that wins.
         if not merged.AUTH_TOKEN:
             try:
-                token = await _get_or_create_plugin_token(
+                token = await _acquire_plugin_token(
                     self.context.container, merged
                 )
                 merged = merged.model_copy(update={"AUTH_TOKEN": token})
