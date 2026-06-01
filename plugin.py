@@ -133,13 +133,22 @@ def _ensure_engine_importable() -> None:
         sys.path.insert(0, plugin_dir)
 
 
-# When running inside the backend container, nginx isn't on 127.0.0.1
-# and gunicorn listens directly at :8000 without the /api root. Match
-# the resolution liquidityhelper._resolve_internal_api_url() uses so
-# the bootstrap and the engine point at the same target.
+# URL for calling Bitcart's own API during admin bootstrap. This MUST
+# match liquidityhelper._resolve_internal_api_url() so the bootstrap and
+# the engine hit the same target. Inside the compose stack (BITCART_ENV
+# is set on every container) the worker has no local gunicorn/nginx, so
+# neither localhost:8000 nor 127.0.0.1/api works there; the backend is
+# reached across the compose network at http://backend:8000, which also
+# works from inside the backend container itself. Standalone runs (no
+# BITCART_ENV) go through the SSH-forwarded nginx at 127.0.0.1/api.
+# LIQUIDITYHELPER_API_URL overrides either way.
 BITCART_LOCAL_URL = (
     os.environ.get("LIQUIDITYHELPER_API_URL")
-    or ("http://localhost:8000" if os.environ.get("BITCART_BACKEND_ROOTPATH") else "http://127.0.0.1/api")
+    or (
+        "http://backend:8000"
+        if (os.environ.get("BITCART_ENV") or os.environ.get("BITCART_BACKEND_ROOTPATH"))
+        else "http://127.0.0.1/api"
+    )
 )
 
 
