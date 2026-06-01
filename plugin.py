@@ -288,7 +288,7 @@ async def _acquire_plugin_token(container: Any, settings: Any) -> str:
     max_attempts = 40  # generous: ~6 min total, covers a slow first boot
     for attempt in range(1, max_attempts + 1):
         try:
-            return await _acquire_plugin_token(container, settings)
+            return await _get_or_create_plugin_token(container, settings)
         except (httpx.TransportError, ConnectionError, OSError) as e:
             if attempt >= max_attempts:
                 logger.error(
