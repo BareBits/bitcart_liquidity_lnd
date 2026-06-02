@@ -3416,6 +3416,63 @@ async def first_wallet_check_create(api: BitcartAPI) -> bool:
     return True
 
 
+async def first_store_check_create(api: BitcartAPI) -> bool:
+    """If no Bitcart store exists yet, auto-create one named STORE_NAME
+    ("mystore") that uses the first wallet named "liquidityhelper".
+
+    A fresh Bitcart install has no stores, and the liquidity engine only
+    manages EXISTING stores (wallet_creation / calculate_topups iterate
+    api.get_stores()). Without this, a brand-new deploy sits idle and the
+    dashboard reports "No stores using a wallet named liquidityhelper".
+    first_wallet_check_create() runs immediately before this in the tick,
+    so a "liquidityhelper" wallet is guaranteed to exist to attach here.
+
+    Returns True if a store already exists or one was created; False on a
+    transient error (the tick retries next pass).
+    """
+    store_list = await api.get_stores()
+    if store_list:
+        # A store already exists — the per-store wallet_creation step
+        # handles attaching the liquidityhelper wallet to it.
+        return True
+    wallet_list = await api.get_wallets()
+    if not wallet_list:
+        logger.error(
+            "No wallets available to attach to the default store yet; "
+            "will retry next tick."
+        )
+        return False
+    lh_wallet = next(
+        (
+            w for w in wallet_list
+            if str(w.get("name") or "").strip().lower() == "liquidityhelper"
+        ),
+        None,
+    )
+    if lh_wallet is None:
+        logger.error(
+            "No wallet named 'liquidityhelper' found to attach to the "
+            "default store; will retry next tick."
+        )
+        return False
+    logger.info(
+        f"No stores found — creating default store '{STORE_NAME}' using "
+        f"liquidityhelper wallet {lh_wallet['id']}."
+    )
+    new_store = await api.create_store(STORE_NAME, [lh_wallet["id"]])
+    if not new_store:
+        logger.error(
+            f"Failed to create default store '{STORE_NAME}'; will retry "
+            f"next tick."
+        )
+        return False
+    logger.info(
+        f"Created default store '{STORE_NAME}' (id={new_store.get('id')}) "
+        f"using wallet {lh_wallet['id']}."
+    )
+    return True
+
+
 def should_close_channel(
     failed_checks: int,
     total_checks: int,
@@ -9729,6 +9786,21 @@ async def main():
         return
     if not first_wallet_response:
         logger.error(f"Error in wallet creation stage2")
+        await asyncio.sleep(60)
+        return
+
+    # create a default store if none exists, attaching the liquidityhelper
+    # wallet — a fresh Bitcart install has no stores, and the engine only
+    # manages existing ones, so without this the plugin sits idle.
+    first_store_response = None
+    try:
+        first_store_response = await first_store_check_create(api)
+    except Exception as e:
+        logger.error(f"Error in store creation stage1 {e} {traceback.format_exc()}")
+        await asyncio.sleep(60)
+        return
+    if not first_store_response:
+        logger.error("Error in store creation stage2")
         await asyncio.sleep(60)
         return
 
