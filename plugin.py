@@ -311,6 +311,10 @@ class Plugin(BasePlugin):
         super().__init__(path)
         self._stop_event: asyncio.Event | None = None
         self._loop_task: asyncio.Task[None] | None = None
+        # Background task that acquires the plugin token and applies
+        # AUTH_TOKEN to the engine globals. Scheduled (never awaited
+        # inline) from startup() — see _apply_engine_auth_token.
+        self._auth_apply_task: asyncio.Task[None] | None = None
 
     def setup_app(self, app: FastAPI) -> None:  # noqa: D401 — Bitcart hook
         # PyCharm remote-debug attach (gunicorn HTTP worker side).
@@ -410,6 +414,25 @@ class Plugin(BasePlugin):
         # in the Celery-style worker process; gunicorn HTTP workers
         # run startup() but not worker_setup(), so the setattr has
         # to happen here as well.
+        #
+        # CRITICAL: schedule this as a BACKGROUND task — never await it
+        # inline. startup() runs inside the backend's uvicorn
+        # application-startup lifespan, and _acquire_plugin_token retries
+        # against Bitcart's HTTP API. On a fresh backend that API is THIS
+        # same process, which cannot start serving until this lifespan
+        # hook returns — so awaiting the retry here deadlocks the backend
+        # (it sits at "Waiting for application startup" until the retry
+        # budget is exhausted, and the deploy's API wait times out).
+        # Backgrounding lets the lifespan finish, the API come up, and the
+        # token get applied a moment later. Keep a reference so the task
+        # isn't garbage-collected while pending.
+        self._auth_apply_task = asyncio.create_task(self._apply_engine_auth_token())
+
+    async def _apply_engine_auth_token(self) -> None:
+        """Acquire the plugin token and apply settings (incl. AUTH_TOKEN)
+        onto the engine's module-level globals. Scheduled from startup()
+        as a background task — see the deadlock note there.
+        """
         try:
             current_settings = await self._load_settings()
             token = await _acquire_plugin_token(
@@ -449,6 +472,14 @@ class Plugin(BasePlugin):
     async def shutdown(self) -> None:
         if self._stop_event is not None:
             self._stop_event.set()
+        # Cancel the background auth-apply task if it's still retrying
+        # (e.g. the backend is torn down before its API ever came up).
+        if self._auth_apply_task is not None and not self._auth_apply_task.done():
+            self._auth_apply_task.cancel()
+            try:
+                await self._auth_apply_task
+            except (asyncio.CancelledError, Exception):
+                pass
         if self._loop_task is not None:
             # Allow the in-flight tick to drain. If you yank it mid-tick
             # you can leave half-issued LSP orders, half-paid payouts,
