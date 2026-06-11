@@ -572,6 +572,44 @@ async def _send_store_owner_email(store_id: str, subject: str, body: str) -> Non
         )
 
 
+# Site-operator (admin) email notifier, injected by the plugin layer.
+# Unlike the store-owner notifier above, this targets the installation
+# operator (first superuser) and carries no store context — used for
+# install-wide concerns such as "an update is available". Async callable
+# (subject, body) -> None. None in standalone mode.
+_admin_notifier: Optional[Callable[..., Any]] = None
+
+
+def set_admin_notifier(fn: Optional[Callable[..., Any]]) -> None:
+    """Register (or clear) the Bitcart-backed site-operator email
+    notifier. Called by the plugin layer during worker_setup."""
+    global _admin_notifier
+    _admin_notifier = fn
+
+
+async def _send_admin_email(subject: str, body: str) -> bool:
+    """Dispatch an install-wide notification to the site operator via the
+    injected Bitcart notifier. Returns True only when an email was
+    actually sent; False when no notifier is registered (e.g. standalone
+    mode), the notifier reported it couldn't send (SMTP unset / no
+    recipient), or the send raised. Callers rely on this to avoid marking
+    a notification "sent" when it wasn't."""
+    if _admin_notifier is None:
+        logger.debug(
+            "No admin notifier registered; skipping operator email: %s",
+            subject,
+        )
+        return False
+    try:
+        return bool(await _admin_notifier(subject, body))
+    except Exception as e:
+        logger.error(
+            f"Failed to send admin notification ({subject}): "
+            f"{e} {traceback.format_exc()}"
+        )
+        return False
+
+
 def hash_string(mystring: str) -> str:
     # Encode the string to bytes
     encoded_string = mystring.encode("utf-8")
@@ -8701,6 +8739,7 @@ _HEALTH_WARNING_IDS = (
     "referral-no-destination",                # X32
     "barebits-fee-xpub-unset",                # X33
     "barebits-fee-xpub-invalid",              # X34
+    "update-available",                       # U35 (auto-update detection)
 )
 
 _LN_CASHOUT_FAIL_DAYS = 7  # fixed per operator decision
@@ -9154,6 +9193,18 @@ async def compute_health_warnings(
     active.extend(_check_cashout_config())
     active.extend(_check_channel_reserve_config())
     active.extend(_check_loop_smtp_config())
+    # Update-availability warning. Reads the cached check result only (no
+    # network here — the tick loop refreshes the cache on its own
+    # schedule), so the dashboard stays fast.
+    try:
+        import update_check
+        update_warning = update_check.get_update_health_warning(
+            bool(globals().get("AUTO_UPDATE_ENABLED", False))
+        )
+        if update_warning is not None:
+            active.append(update_warning)
+    except Exception as e:
+        logger.warning(f"update-availability check raised: {e} {traceback.format_exc()}")
     if api is not None:
         try:
             active.extend(await _check_ln_cashout_health(api))
@@ -10091,6 +10142,54 @@ def trigger_debug_run_once() -> None:
         pass
 
 
+async def run_update_check_loop(
+    stop_event: Optional[asyncio.Event] = None,
+) -> None:
+    """Background loop that periodically checks GitHub for a newer release
+    and surfaces it (caches the result for the dashboard warning + emails
+    the operator when auto-updates are off).
+
+    Deliberately SEPARATE from run_tick_loop so a slow network fetch can
+    never delay a liquidity tick. The actual check self-throttles to
+    UPDATE_CHECK_INTERVAL_SECONDS; we wake on a short cadence so a
+    channel/interval change made in the UI takes effect promptly. Reads
+    the engine's module globals, which the tick loop keeps fresh via
+    refresh_settings_from_bitcart.
+
+    Never returns abnormally — every iteration is wrapped, mirroring the
+    "nothing should ever crash the script" contract.
+    """
+    # Wake cadence. The check itself only hits the network once per
+    # UPDATE_CHECK_INTERVAL_SECONDS; this is just how often we re-evaluate
+    # whether it's due (and pick up live channel/interval changes).
+    poll_seconds = 300
+    while True:
+        try:
+            import update_check
+            await update_check.maybe_check_for_updates(
+                channel=globals().get("UPDATE_CHANNEL", "main"),
+                interval_seconds=globals().get(
+                    "UPDATE_CHECK_INTERVAL_SECONDS", 21600
+                ),
+                enabled=bool(globals().get("AUTO_UPDATE_ENABLED", False)),
+                admin_notifier=_send_admin_email,
+            )
+        except Exception as e:
+            logger.warning(
+                f"run_update_check_loop iteration failed: {e} "
+                f"{traceback.format_exc()}"
+            )
+        if stop_event is not None:
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=poll_seconds)
+            except asyncio.TimeoutError:
+                pass
+            if stop_event.is_set():
+                return
+        else:
+            await asyncio.sleep(poll_seconds)
+
+
 async def run_tick_loop(stop_event: Optional[asyncio.Event] = None) -> None:
     """Run main() in a loop forever (until SINGLE_RUN is set or
     `stop_event` is signalled). The loop body is wrapped so that ANY
@@ -10150,6 +10249,21 @@ async def run_tick_loop(stop_event: Optional[asyncio.Event] = None) -> None:
             # from config.py / env / user_config.py are authoritative.
             # Silently skip.
             pass
+
+        # Worker liveness heartbeat. Runs BEFORE the disabled/debug gates
+        # so it keeps proving the loop is alive even while liquidity
+        # management is paused. A fast local DB write — best-effort, and
+        # never allowed to break the tick. (The network update CHECK is
+        # deliberately NOT here — it runs in its own background loop,
+        # run_update_check_loop, so a slow fetch can't delay a tick.)
+        try:
+            import update_check
+            update_check.record_heartbeat()
+        except Exception as e:
+            logger.warning(
+                f"heartbeat failed: {e} {traceback.format_exc()}"
+            )
+
         # Disabled gate. Re-read LIQUIDITY_DISABLED every iteration so
         # the operator can flip the dashboard's mode dropdown to
         # "Disabled" and have main() stop firing on the very next
