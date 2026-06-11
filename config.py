@@ -904,6 +904,36 @@ AUTOLOOP_EASY_EXCLUDED_PEERS: List[str] = []
 
 
 # =============================================================================
+# === Automatic updates ===
+# =============================================================================
+#
+# The plugin can check GitHub for newer releases on a chosen channel and
+# (where the deployment supports it) apply them automatically. The CHECK
+# is always on and harmless — it only reads a version number and, when a
+# newer one exists, surfaces a dashboard warning and emails the site
+# operator. APPLYING updates automatically is OFF by default and is
+# carried out by a host-side updater (see AUTOUPDATE_DESIGN.md); the
+# plugin process itself never rewrites its own code.
+
+# Master switch for AUTOMATIC application of updates. OFF by default:
+# while off, the plugin still tells you when an update is available (a
+# dashboard warning + an email to the site operator if SMTP is
+# configured) but never applies anything on its own. Set True only on
+# deployments that run the host-side updater.
+AUTO_UPDATE_ENABLED: bool = False
+
+# Release channel to track. "main" = stable; "testing" = early/dev
+# releases. The channel is simply the GitHub branch the version check
+# (and the host-side updater) reads from.
+UPDATE_CHANNEL: str = "main"
+
+# How often (seconds) the plugin polls GitHub for the latest version on
+# the channel. The result is cached, so the dashboard and health endpoint
+# read it without hitting the network. Default: 6 hours.
+UPDATE_CHECK_INTERVAL_SECONDS: int = 21600
+
+
+# =============================================================================
 # === Standalone bootstrap ===
 # =============================================================================
 #

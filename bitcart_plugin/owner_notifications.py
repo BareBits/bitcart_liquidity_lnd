@@ -101,3 +101,52 @@ def make_store_owner_notifier(
             )
 
     return notify
+
+
+def make_admin_notifier(
+    container: Any,
+) -> Callable[[str, str], Awaitable[bool]]:
+    """Build the async notifier the engine calls for install-wide alerts:
+    ``(subject, body) -> bool``. Targets the **site operator** (first
+    superuser) rather than a store owner — used for things like "an update
+    is available" that aren't tied to a single store.
+
+    Sends via Bitcart's installation-wide Policy SMTP. Returns **True only
+    when an email was actually dispatched**; returns False (with a warning)
+    when SMTP isn't configured or no superuser email resolves. Callers use
+    the return value to avoid recording a notification as "sent" when it
+    wasn't — so e.g. the update checker keeps trying until SMTP is set up,
+    instead of silently swallowing the first notice.
+    """
+
+    async def notify(subject: str, body: str) -> bool:
+        async with container(scope=Scope.REQUEST) as rc:
+            setting_service: SettingService = await rc.get(SettingService)
+            user_repo: UserRepository = await rc.get(UserRepository)
+
+            policy = await setting_service.get_setting(Policy)
+            email_obj = Email.get_email(policy)
+            if not email_obj.is_enabled():
+                logger.warning(
+                    "Cannot send operator email '%s': Bitcart's "
+                    "installation-wide SMTP (Server Management -> Policies) "
+                    "is not configured.",
+                    subject,
+                )
+                return False
+
+            recipient = await _first_superuser_email(user_repo)
+            if not recipient:
+                logger.warning(
+                    "Cannot send operator email '%s': no superuser email "
+                    "could be resolved.",
+                    subject,
+                )
+                return False
+
+            # send_mail is blocking smtplib — run it off the event loop.
+            await asyncio.to_thread(email_obj.send_mail, recipient, body, subject)
+            logger.info("Sent operator email '%s' to %s", subject, recipient)
+            return True
+
+    return notify

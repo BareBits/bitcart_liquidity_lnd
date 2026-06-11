@@ -47,6 +47,7 @@ from .bitcart_plugin.log_endpoints import (
     build_router, install_plugin_log_sinks, build_debug_router,
 )
 from .bitcart_plugin.dashboard import build_router as build_dashboard_router
+from .bitcart_plugin.health_endpoint import build_health_router
 from .bitcart_plugin.wallet_debug import build_wallet_debug_router
 from .bitcart_plugin.log_export import build_log_export_router
 
@@ -311,6 +312,10 @@ class Plugin(BasePlugin):
         super().__init__(path)
         self._stop_event: asyncio.Event | None = None
         self._loop_task: asyncio.Task[None] | None = None
+        # Background loop that polls GitHub for newer releases (decoupled
+        # from the tick loop so a slow fetch can't delay a tick). Spawned
+        # in worker_setup; stopped via the shared _stop_event.
+        self._update_check_task: asyncio.Task[None] | None = None
         # Background task that acquires the plugin token and applies
         # AUTH_TOKEN to the engine globals. Scheduled (never awaited
         # inline) from startup() — see _apply_engine_auth_token.
@@ -346,6 +351,10 @@ class Plugin(BasePlugin):
         app.include_router(build_router(AuthDependency()))
         app.include_router(_build_schema_router(AuthDependency()))
         app.include_router(build_dashboard_router(AuthDependency()))
+        # Health probe is intentionally UNAUTHENTICATED — the host-side
+        # updater curls it with no bearer token. Exposes only
+        # low-sensitivity version/liveness data (see health_endpoint.py).
+        app.include_router(build_health_router())
         app.include_router(build_debug_router(AuthDependency()))
         app.include_router(build_wallet_debug_router(AuthDependency()))
         app.include_router(build_log_export_router(AuthDependency()))
@@ -497,6 +506,20 @@ class Plugin(BasePlugin):
                     pass
                 except Exception as e:
                     logger.debug(f"plugin tick-loop task raised on cancellation: {e}")
+        # Stop the update-check loop. It only ever sleeps or does a quick
+        # fetch, so a short drain then cancel is plenty — no fund-related
+        # work to protect mid-flight like the tick loop above.
+        if self._update_check_task is not None and not self._update_check_task.done():
+            try:
+                await asyncio.wait_for(self._update_check_task, timeout=5)
+            except asyncio.TimeoutError:
+                self._update_check_task.cancel()
+                try:
+                    await self._update_check_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            except Exception as e:
+                logger.debug(f"update-check task raised on shutdown: {e}")
         # Drain engine resources before the log listener stops so any
         # errors during teardown still get logged. Three sources of
         # leaks across plugin reloads:
@@ -588,6 +611,21 @@ class Plugin(BasePlugin):
                 "low-liquidity emails will be skipped until the next restart"
             )
 
+        # Wire the site-operator (admin) notifier too — used by the
+        # update checker to email the operator when an update is available
+        # and automatic updates are off. Independent of the store-owner
+        # notifier above; failure here only costs update emails.
+        try:
+            from .bitcart_plugin.owner_notifications import make_admin_notifier
+            liquidityhelper.set_admin_notifier(
+                make_admin_notifier(self.context.container)
+            )
+        except Exception:
+            logger.exception(
+                "worker_setup: failed to wire the Bitcart admin notifier; "
+                "update-available emails will be skipped until the next restart"
+            )
+
         # Spawn the tick loop. Bitcart owns the asyncio loop; we just
         # add a task. Attach a done-callback so that if the task ends
         # with an uncaught exception (which run_tick_loop's outer
@@ -602,6 +640,16 @@ class Plugin(BasePlugin):
             name=f"{self.name}.tick_loop",
         )
         self._loop_task.add_done_callback(self._on_tick_loop_done)
+
+        # Spawn the update-check loop as a SEPARATE task so a slow GitHub
+        # fetch never delays a liquidity tick. Shares the tick loop's
+        # stop_event so shutdown() stops both. Keep a reference so the
+        # task isn't garbage-collected while pending. It self-recovers
+        # (never raises), so it needs no restart callback.
+        self._update_check_task = asyncio.create_task(
+            liquidityhelper.run_update_check_loop(stop_event=self._stop_event),
+            name=f"{self.name}.update_check_loop",
+        )
 
         # Cross-process bridge for the debug-mode "Run one tick"
         # button. The HTTP endpoint runs in the backend process and
