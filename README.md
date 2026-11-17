@@ -1,4 +1,5 @@
 # Bitcart Bitcoin Lightning Liquidity Helper
+# DO NOT USE this script, it is no longer maintained and relies on insecure code with known vulnerabilities.
 This script makes it easy to manage inbound Bitcoin Lightning liquidity for your Bitcart store. While Bitcart supports lightning, 
 it leaves you to figure out how to get inbound liquidity. Without inbound liquidity, you can't
 receive payments via lightning. 
